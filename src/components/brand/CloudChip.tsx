@@ -14,9 +14,9 @@
  * box, height as a fraction of `lobeBase`, each sitting 38% of its own height
  * proud of the edge.
  */
-import React, { useState } from "react";
+import React, { memo, useState } from "react";
 import { View, Pressable, StyleSheet, ViewStyle, LayoutChangeEvent } from "react-native";
-import Svg, { Rect, Ellipse, G, Defs, Filter, FeDropShadow } from "react-native-svg";
+import Svg, { Rect, Ellipse, G } from "react-native-svg";
 
 type Tone = "light" | "violet" | "glass";
 
@@ -39,7 +39,7 @@ const toneFill = (tone: Tone) =>
  * `lobeBase` sets how big the bumps are — the box height for a pill, a fixed
  * value for a tall card (or the lobes would be absurd).
  */
-export function CloudSurface({
+function CloudSurfaceBase({
   w,
   h,
   radius,
@@ -65,17 +65,17 @@ export function CloudSurface({
   const W = w + pad * 2;
   const H = h + over * 2 + pad;
 
-  const shapes = (
+  const silhouette = (dy: number, colour: string) => (
     <G>
       {LOBES.map((l, i) => {
         const lh = base * l.height;
         const lw = w * l.width;
         const cx = pad + l.left * w;
-        const cy = l.edge === "top" ? over + 0.12 * lh : over + h - 0.12 * lh;
-        return <Ellipse key={i} cx={cx} cy={cy} rx={lw / 2} ry={lh / 2} fill={fill} />;
+        const cy = (l.edge === "top" ? over + 0.12 * lh : over + h - 0.12 * lh) + dy;
+        return <Ellipse key={i} cx={cx} cy={cy} rx={lw / 2} ry={lh / 2} fill={colour} />;
       })}
       {/* body last — it covers the seams where the lobes meet it */}
-      <Rect x={pad} y={over} width={w} height={h} rx={r} ry={r} fill={fill} />
+      <Rect x={pad} y={over + dy} width={w} height={h} rx={r} ry={r} fill={colour} />
     </G>
   );
 
@@ -85,14 +85,14 @@ export function CloudSurface({
       height={H}
       style={{ position: "absolute", left: -pad, top: -over }}
       pointerEvents="none">
-      {shadow && (
-        <Defs>
-          <Filter id="cloudShadow" x="-30%" y="-30%" width="160%" height="170%">
-            <FeDropShadow dx="0" dy="5" stdDeviation="6" floodColor="#40247A" floodOpacity="0.26" />
-          </Filter>
-        </Defs>
-      )}
-      {shadow ? <G filter="url(#cloudShadow)">{shapes}</G> : shapes}
+      {/* Two offset copies of the silhouette instead of an <FeDropShadow>.
+          An SVG Gaussian blur forces an offscreen pass + blur on EVERY draw of
+          EVERY chip, which was one of the heaviest things on screen. Stacked
+          translucent copies read the same at these sizes and cost two ordinary
+          fills. */}
+      {shadow && silhouette(6, "rgba(64,36,122,0.13)")}
+      {shadow && silhouette(3, "rgba(64,36,122,0.10)")}
+      {silhouette(0, fill)}
     </Svg>
   );
 }
@@ -101,7 +101,7 @@ export function CloudSurface({
  * A cloud with content inside it. Sizes itself to its children (plus padding),
  * measures, then draws the silhouette behind them.
  */
-export default function CloudChip({
+function CloudChipBase({
   children,
   tone = "light",
   onPress,
@@ -160,6 +160,9 @@ export default function CloudChip({
   }
   return inner;
 }
+
+export const CloudSurface = memo(CloudSurfaceBase);
+export default memo(CloudChipBase);
 
 const styles = StyleSheet.create({
   wrap: { alignSelf: "flex-start", position: "relative", justifyContent: "center" },

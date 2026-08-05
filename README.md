@@ -56,11 +56,43 @@ JDK requirement (use Android Studio's bundled JDK, not a Homebrew JDK 26).
 - PBKDF2 runs **native** via `react-native-quick-crypto`; adding/removing it
   needs a Gradle rebuild, not just a Metro reload.
 
+## Keys
+
+Real, extension-identical keys on all four chains — EVM, Solana, Sui, Aptos.
+The noid spend key is a genuine BabyJubJub point (pk = sk·Base8), implemented
+in `src/crypto/babyjub.ts` rather than pulled from circomlibjs.
+
+Two verification scripts guard this; run them after ANY change to derivation:
+
+```bash
+node --experimental-strip-types scripts/verify-babyjub.ts      # vs circomlibjs
+node --experimental-strip-types scripts/verify-derivation.ts   # vs the extension
+```
+
+The second imports the extension's own modules, so a mismatch means the app
+would give a different on-chain identity than the extension for the same seed.
+(It needs a temporary copy with a resolvable import — see the sed line in the
+project history, Node ESM requires the `.ts` extension that Metro does not.)
+
+## Performance rules (this app was once badly janky)
+
+- **Never animate SVG geometry props.** They cannot use the native driver, so
+  every frame crosses into JS. The blink animates a `<View>` `scaleY` instead —
+  RN scales about the view's own centre, which is exactly the right pivot.
+- **Memoise every brand component.** Sky/Clouds/CloudChip/Wordmark are large
+  vector trees; without `memo` a single keystroke re-renders all of them.
+- **`renderToHardwareTextureAndroid`** on the sky and the cloud banks — static
+  or purely-translated art becomes one GPU texture instead of re-rasterising.
+- **No SVG filters.** `<FeDropShadow>` forces an offscreen pass + blur on every
+  draw of every chip. Two offset silhouettes look the same and cost two fills.
+- **Load only the font weights actually used** — each one blocks first paint.
+
+Measured on the Pixel_7 emulator (software GPU, so treat absolutes with care;
+the ratios are what matter): median frame time went 450ms → 48ms, and the same
+scroll test that scored 2.25× worse than the native Settings app now matches it.
+
 ## Not yet wired (next steps)
 
-- Sui/Aptos noid spend keys use a Poseidon approximation, not the real
-  BabyJubJub point — fine for identity/display, swap in real curve math before
-  any on-chain / ZK use.
 - The wallet home (balances, modes, send/receive, pool) is a separate milestone.
 
 ## Building an installable APK

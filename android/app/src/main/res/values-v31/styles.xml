@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!-- Android 12+ SplashScreen API. Without these the platform falls back to a
+       white window and shows the launcher icon on it, which is the white flash
+       with circles seen at cold start. -->
+  <style name="Theme.App.SplashScreen" parent="AppTheme">
+    <item name="android:windowSplashScreenBackground">@color/splashscreen_background</item>
+    <item name="android:windowSplashScreenAnimatedIcon">@drawable/splashscreen_logo</item>
+    <item name="android:windowBackground">@color/splashscreen_background</item>
+  </style>
+</resources>

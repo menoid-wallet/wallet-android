@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Pre-Android-12 splash: the app's purple with the mark centred on it.
+     Pointing windowBackground straight at a bitmap (as the template did)
+     stretches that bitmap over the whole window instead. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+  <item android:drawable="@color/splashscreen_background" />
+  <item>
+    <bitmap android:src="@drawable/splashscreen_logo" android:gravity="center" />
+  </item>
+</layer-list>

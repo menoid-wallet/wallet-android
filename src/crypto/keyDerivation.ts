@@ -6,11 +6,10 @@
  * seed via SLIP-0010 ed25519 (real, standard addresses). Their noid identities
  * follow the same signature scheme as the extension.
  *
- * NOTE on noid keys: the extension computes the spend public key as an actual
- * BabyJubJub point (sk·Base8). Here — where these keys are identity/display
- * values, not ZK-proof inputs — the point is approximated with Poseidon field
- * elements. When on-chain/ZK is wired up later, swap spendKeysFromSeed() for a
- * real BabyJubJub scalar-mult; nothing else changes. See [[menoid-user-commitment-architecture]].
+ * The spend public key is a REAL BabyJubJub point (pk = sk·Base8) — see
+ * crypto/babyjub.ts, which is verified against the extension's circomlibjs in
+ * scripts/verify-babyjub.ts. These keys therefore match the extension exactly
+ * and are usable as ZK-proof inputs / on-chain identity, not just for display.
  */
 import { ethers } from "ethers";
 import { hmac } from "@noble/hashes/hmac";
@@ -18,9 +17,10 @@ import { sha512, sha256 as nobleSha256 } from "@noble/hashes/sha2";
 import { sha3_256 } from "@noble/hashes/sha3";
 import { blake2b } from "@noble/hashes/blake2b";
 import { bytesToHex, utf8ToBytes, concatBytes } from "@noble/hashes/utils";
-import { poseidon2, poseidon3 } from "poseidon-lite";
+import { poseidon3 } from "poseidon-lite";
 import nacl from "tweetnacl";
 import bs58 from "bs58";
+import { mulPointBase8 } from "./babyjub";
 
 const REGISTRATION_MESSAGE = "menoid_Wallet";
 const BABYJUB_ORDER =
@@ -51,11 +51,11 @@ export interface FullWallet {
 }
 
 // ── noid identity helpers ──────────────────────────────────────────────────
+/** sk = H(tag ‖ sig) mod l, pk = sk·Base8 on BabyJubJub. */
 function spendKeysFromSeed(skBig: bigint): { sk: string; px: string; py: string } {
   const sk = ((skBig % BABYJUB_ORDER) + BABYJUB_ORDER) % BABYJUB_ORDER;
-  const px = poseidon2([sk, 0n]).toString();
-  const py = poseidon2([sk, 1n]).toString();
-  return { sk: sk.toString(), px, py };
+  const pk = mulPointBase8(sk);
+  return { sk: sk.toString(), px: pk.x, py: pk.y };
 }
 function commitment(addressField: bigint, px: string, py: string): string {
   return poseidon3([addressField, BigInt(px), BigInt(py)]).toString();
@@ -136,8 +136,8 @@ export function deriveSolanaAccount(seedPhrase: string): Account {
     publicKey: bs58.encode(kp.publicKey),
   };
 }
-export async function deriveSolanaNoidAccount(seedPhrase: string): Promise<NoidAccount> {
-  const k = slip10Derive(seedFromMnemonic(seedPhrase), [44, 501, 0, 0]);
+/** The noid identity for a Solana account, from its 32-byte ed25519 seed. */
+function solanaNoidFromSeed(k: Uint8Array): NoidAccount {
   const kp = nacl.sign.keyPair.fromSeed(k);
   const sig = nacl.sign.detached(utf8ToBytes(REGISTRATION_MESSAGE), kp.secretKey);
   const spend = spendKeysFromSeed(BigInt("0x" + bytesToHex(sha256Concat("menoid/spend", sig))));
@@ -150,6 +150,9 @@ export async function deriveSolanaNoidAccount(seedPhrase: string): Promise<NoidA
     zkSecretKey: spend.sk,
     zkPublicKey: commitment(addrField, spend.px, spend.py),
   };
+}
+export async function deriveSolanaNoidAccount(seedPhrase: string): Promise<NoidAccount> {
+  return solanaNoidFromSeed(slip10Derive(seedFromMnemonic(seedPhrase), [44, 501, 0, 0]));
 }
 
 // ── Sui ──────────────────────────────────────────────────────────────────
@@ -166,8 +169,8 @@ export function deriveSuiAccount(seedPhrase: string): Account {
     publicKey: Buffer.from(kp.publicKey).toString("base64"),
   };
 }
-export async function deriveSuiNoidAccount(seedPhrase: string): Promise<NoidAccount> {
-  const k = slip10Derive(seedFromMnemonic(seedPhrase), [44, 784, 0, 0, 0]);
+/** The noid identity for a Sui account, from its 32-byte ed25519 seed. */
+function suiNoidFromSeed(k: Uint8Array): NoidAccount {
   const kp = nacl.sign.keyPair.fromSeed(k);
   const sig = nacl.sign.detached(utf8ToBytes(REGISTRATION_MESSAGE), kp.secretKey);
   const spend = spendKeysFromSeed(BigInt("0x" + bytesToHex(sha256Concat("menoid/spend", sig))));
@@ -180,6 +183,9 @@ export async function deriveSuiNoidAccount(seedPhrase: string): Promise<NoidAcco
     zkSecretKey: spend.sk,
     zkPublicKey: commitment(BigInt(addr) % BN254_P, spend.px, spend.py),
   };
+}
+export async function deriveSuiNoidAccount(seedPhrase: string): Promise<NoidAccount> {
+  return suiNoidFromSeed(slip10Derive(seedFromMnemonic(seedPhrase), [44, 784, 0, 0, 0]));
 }
 
 // ── Aptos ────────────────────────────────────────────────────────────────
@@ -196,8 +202,8 @@ export function deriveAptosAccount(seedPhrase: string): Account {
     publicKey: "0x" + bytesToHex(kp.publicKey),
   };
 }
-export async function deriveAptosNoidAccount(seedPhrase: string): Promise<NoidAccount> {
-  const k = slip10Derive(seedFromMnemonic(seedPhrase), [44, 637, 0, 0, 0]);
+/** The noid identity for an Aptos account, from its 32-byte ed25519 seed. */
+function aptosNoidFromSeed(k: Uint8Array): NoidAccount {
   const kp = nacl.sign.keyPair.fromSeed(k);
   const sig = nacl.sign.detached(utf8ToBytes(REGISTRATION_MESSAGE), kp.secretKey);
   const spend = spendKeysFromSeed(BigInt("0x" + bytesToHex(sha256Concat("menoid/spend", sig))));
@@ -210,6 +216,9 @@ export async function deriveAptosNoidAccount(seedPhrase: string): Promise<NoidAc
     zkSecretKey: spend.sk,
     zkPublicKey: commitment(BigInt(addr) % BN254_P, spend.px, spend.py),
   };
+}
+export async function deriveAptosNoidAccount(seedPhrase: string): Promise<NoidAccount> {
+  return aptosNoidFromSeed(slip10Derive(seedFromMnemonic(seedPhrase), [44, 637, 0, 0, 0]));
 }
 
 // ── Full-wallet generators ────────────────────────────────────────────────
@@ -256,35 +265,46 @@ export async function importFromPrivateKey(
     return { normalAccount, noidAccount, importedNetwork: "ethereum" };
   }
   if (network === "solana") {
+    // a Solana secret key is 64 bytes (seed ‖ pubkey); the seed is the first 32
     const decoded = bs58.decode(pk.trim());
-    const kp =
-      decoded.length === 64
-        ? nacl.sign.keyPair.fromSecretKey(decoded)
-        : nacl.sign.keyPair.fromSeed(decoded.slice(0, 32));
+    const seed = decoded.slice(0, 32);
+    const kp = nacl.sign.keyPair.fromSeed(seed);
     const acct: Account = {
       address: bs58.encode(kp.publicKey),
       privateKey: bs58.encode(kp.secretKey),
       publicKey: bs58.encode(kp.publicKey),
     };
-    return { solanaAccount: acct, importedNetwork: "solana" };
+    return {
+      solanaAccount: acct,
+      solanaNoidAccount: solanaNoidFromSeed(seed),
+      importedNetwork: "solana",
+    };
   }
   if (network === "aptos") {
-    const seed = ethers.getBytes(pk.trim().startsWith("0x") ? pk.trim() : "0x" + pk.trim());
-    const kp = nacl.sign.keyPair.fromSeed(seed.slice(0, 32));
+    const seed = ethers
+      .getBytes(pk.trim().startsWith("0x") ? pk.trim() : "0x" + pk.trim())
+      .slice(0, 32);
+    const kp = nacl.sign.keyPair.fromSeed(seed);
     const acct: Account = {
       address: aptosAddress(kp.publicKey),
-      privateKey: "0x" + bytesToHex(seed.slice(0, 32)),
+      privateKey: "0x" + bytesToHex(seed),
       publicKey: "0x" + bytesToHex(kp.publicKey),
     };
-    return { aptosAccount: acct, importedNetwork: "aptos" };
+    return {
+      aptosAccount: acct,
+      aptosNoidAccount: aptosNoidFromSeed(seed),
+      importedNetwork: "aptos",
+    };
   }
   // sui
-  const seed = ethers.getBytes(pk.trim().startsWith("0x") ? pk.trim() : "0x" + pk.trim());
-  const kp = nacl.sign.keyPair.fromSeed(seed.slice(0, 32));
+  const seed = ethers
+    .getBytes(pk.trim().startsWith("0x") ? pk.trim() : "0x" + pk.trim())
+    .slice(0, 32);
+  const kp = nacl.sign.keyPair.fromSeed(seed);
   const acct: Account = {
     address: suiAddress(kp.publicKey),
-    privateKey: "0x" + bytesToHex(seed.slice(0, 32)),
+    privateKey: "0x" + bytesToHex(seed),
     publicKey: Buffer.from(kp.publicKey).toString("base64"),
   };
-  return { suiAccount: acct, importedNetwork: "sui" };
+  return { suiAccount: acct, suiNoidAccount: suiNoidFromSeed(seed), importedNetwork: "sui" };
 }

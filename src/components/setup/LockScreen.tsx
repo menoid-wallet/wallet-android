@@ -149,7 +149,7 @@ export default function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
               lobeBase={32}
               contentStyle={styles.unlockBtn}>
               {loading && (
-                <ActivityIndicator size="small" color={COLORS.violetDeep} style={{ marginRight: 10 }} />
+                <ActivityIndicator size="small" color={COLORS.violetDeep} style={styles.unlockSpinner} />
               )}
               <Text style={styles.unlockText}>{loading ? "Unlocking…" : "Unlock"}</Text>
             </CloudChip>
@@ -201,6 +201,10 @@ const styles = StyleSheet.create({
     color: COLORS.errorInk,
     textAlign: "center",
   },
-  unlockBtn: { paddingHorizontal: 44, paddingVertical: 15 },
+  /* Fixed width. "Unlock" → spinner + "Unlocking…" is a wider run, and letting
+     the cloud re-measure made the whole silhouette slide left mid-press. */
+  unlockBtn: { width: 210, paddingVertical: 15, justifyContent: "center" },
   unlockText: { fontFamily: FONT.roundBold, fontSize: 17, color: COLORS.violetDeep },
+  /* absolute so the label stays centred whether or not the spinner is showing */
+  unlockSpinner: { position: "absolute", left: 26 },
 });

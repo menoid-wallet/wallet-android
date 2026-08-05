@@ -1,33 +1,22 @@
 /**
  * Sky.tsx — the purple backdrop every surface opens on.
  *
- * A 225° lilac→violet diagonal (expo-linear-gradient) with an SVG radial bloom
- * top-right, a deep pool bottom-left, a printed grid, and a scatter of
- * sparkles. Fills its parent; give it a width/height (usually the window).
+ * A 225° lilac→violet diagonal (expo-linear-gradient) with a radial bloom in
+ * the top-right, a deep pool bottom-left, a printed grid, and a scatter of
+ * sparkles.
+ *
+ * PERFORMANCE NOTE: this is behind EVERY screen, so it must cost nothing to
+ * keep on screen.
+ *   - the whole thing is memoised on (width, height, isNoid), so a parent
+ *     re-render (every keystroke in a password field, say) does NOT redraw it
+ *   - the grid is ONE <Path> with many subpaths instead of ~105 <Line> nodes
+ *   - bloom, pool, grid and sparkles share a single <Svg> root
  */
-import React from "react";
+import React, { memo, useMemo } from "react";
 import { View, StyleSheet } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import Svg, { Defs, RadialGradient, Stop, Rect, Line, Path, G } from "react-native-svg";
+import Svg, { Defs, RadialGradient, Stop, Rect, Path, G } from "react-native-svg";
 import { SKY_OPEN, SKY_NOID } from "../../theme/tokens";
-
-/** Printed square grid (34px cells). */
-function Grid({ isNoid, width, height }: { isNoid: boolean; width: number; height: number }) {
-  const cell = 34;
-  const stroke = isNoid ? "rgba(198,172,255,0.09)" : "rgba(255,255,255,0.13)";
-  const cols = Math.ceil(width / cell) + 1;
-  const rows = Math.ceil(height / cell) + 1;
-  const lines: React.ReactNode[] = [];
-  for (let i = 1; i < cols; i++)
-    lines.push(<Line key={`v${i}`} x1={i * cell} y1={0} x2={i * cell} y2={height} stroke={stroke} strokeWidth={1} />);
-  for (let j = 1; j < rows; j++)
-    lines.push(<Line key={`h${j}`} x1={0} y1={j * cell} x2={width} y2={j * cell} stroke={stroke} strokeWidth={1} />);
-  return (
-    <Svg width={width} height={height} style={StyleSheet.absoluteFill}>
-      {lines}
-    </Svg>
-  );
-}
 
 const SPARKS: [number, number, number, number][] = [
   [12, 14, 11, 0.9], [26, 40, 7, 0.55], [38, 9, 9, 0.7], [64, 12, 10, 0.8],
@@ -35,23 +24,9 @@ const SPARKS: [number, number, number, number][] = [
 ];
 const SPARK_PATH = "M12 0c0 6.6 5.4 12 12 12-6.6 0-12 5.4-12 12 0-6.6-5.4-12-12-12 6.6 0 12-5.4 12-12z";
 
-function Sparkles({ width, height }: { width: number; height: number }) {
-  return (
-    <Svg width={width} height={height} style={StyleSheet.absoluteFill} pointerEvents="none">
-      {SPARKS.map(([l, t, s, o], i) => {
-        const x = (l / 100) * width;
-        const y = (t / 100) * height;
-        return (
-          <G key={i} transform={`translate(${x} ${y}) scale(${s / 24})`} opacity={o}>
-            <Path d={SPARK_PATH} fill="#fff" />
-          </G>
-        );
-      })}
-    </Svg>
-  );
-}
+const GRID_CELL = 34;
 
-export default function Sky({
+function SkyBase({
   isNoid = false,
   width,
   height,
@@ -65,8 +40,27 @@ export default function Sky({
   sparkles?: boolean;
 }) {
   const cfg = isNoid ? SKY_NOID : SKY_OPEN;
+
+  // One path string for the entire grid — 105 nodes collapse into 1.
+  const gridPath = useMemo(() => {
+    if (!grid || width <= 0 || height <= 0) return "";
+    let d = "";
+    for (let x = GRID_CELL; x < width; x += GRID_CELL) d += `M${x} 0V${height}`;
+    for (let y = GRID_CELL; y < height; y += GRID_CELL) d += `M0 ${y}H${width}`;
+    return d;
+  }, [grid, width, height]);
+
   return (
-    <View style={StyleSheet.absoluteFill} pointerEvents="none">
+    /* renderToHardwareTextureAndroid: the sky never changes, so bake it into a
+       single GPU texture. Without it, every scroll frame re-rasterises a
+       full-screen gradient, two full-screen radial washes, a ~100-segment grid
+       path and the sparkles. */
+    <View
+      style={StyleSheet.absoluteFill}
+      pointerEvents="none"
+      renderToHardwareTextureAndroid
+      shouldRasterizeIOS
+      collapsable={false}>
       <LinearGradient
         colors={cfg.colors as unknown as readonly [string, string, ...string[]]}
         locations={cfg.locations as unknown as readonly [number, number, ...number[]]}
@@ -76,20 +70,41 @@ export default function Sky({
       />
       <Svg width={width} height={height} style={StyleSheet.absoluteFill}>
         <Defs>
-          <RadialGradient id="bloom" cx="100%" cy="0%" r="90%">
+          <RadialGradient id="sky-bloom" cx="100%" cy="0%" r="90%">
             <Stop offset="0" stopColor={isNoid ? "#9674E0" : "#F6E5FD"} stopOpacity={isNoid ? 0.55 : 0.92} />
             <Stop offset="0.55" stopColor={isNoid ? "#7858C4" : "#F6E5FD"} stopOpacity={0} />
           </RadialGradient>
-          <RadialGradient id="pool" cx="0%" cy="100%" r="90%">
+          <RadialGradient id="sky-pool" cx="0%" cy="100%" r="90%">
             <Stop offset="0" stopColor={isNoid ? "#0C061E" : "#4E2F8E"} stopOpacity={isNoid ? 0.72 : 0.3} />
             <Stop offset="0.58" stopColor={isNoid ? "#0C061E" : "#4E2F8E"} stopOpacity={0} />
           </RadialGradient>
         </Defs>
-        <Rect x={0} y={0} width={width} height={height} fill="url(#bloom)" />
-        <Rect x={0} y={0} width={width} height={height} fill="url(#pool)" />
+
+        <Rect x={0} y={0} width={width} height={height} fill="url(#sky-bloom)" />
+        <Rect x={0} y={0} width={width} height={height} fill="url(#sky-pool)" />
+
+        {!!gridPath && (
+          <Path
+            d={gridPath}
+            stroke={isNoid ? "rgba(198,172,255,0.09)" : "rgba(255,255,255,0.13)"}
+            strokeWidth={1}
+            fill="none"
+          />
+        )}
+
+        {sparkles &&
+          !isNoid &&
+          SPARKS.map(([l, t, s, o], i) => (
+            <G
+              key={i}
+              transform={`translate(${(l / 100) * width} ${(t / 100) * height}) scale(${s / 24})`}
+              opacity={o}>
+              <Path d={SPARK_PATH} fill="#fff" />
+            </G>
+          ))}
       </Svg>
-      {grid && <Grid isNoid={isNoid} width={width} height={height} />}
-      {sparkles && !isNoid && <Sparkles width={width} height={height} />}
     </View>
   );
 }
+
+export default memo(SkyBase);

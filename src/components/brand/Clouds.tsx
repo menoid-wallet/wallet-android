@@ -6,7 +6,7 @@
  * gradient, so the vertical ramp runs continuously across the whole shape. A
  * solid deck welds the near bank's puffs to the bottom edge.
  */
-import React, { useEffect, useRef } from "react";
+import React, { memo, useEffect, useMemo, useRef } from "react";
 import { Animated, Easing, View, StyleSheet, ViewStyle } from "react-native";
 import Svg, { Defs, LinearGradient, Stop, Circle, Rect, G } from "react-native-svg";
 
@@ -74,7 +74,7 @@ function Puffs({ clouds, floor, gradId }: { clouds: CloudProps[]; floor: boolean
  * A drifting cloud bank. Renders two identical strips side by side and animates
  * the pair left by one strip width, looping seamlessly.
  */
-export function CloudBank({
+function CloudBankBase({
   layer,
   viewportWidth,
   bandHeight,
@@ -110,7 +110,7 @@ export function CloudBank({
     return () => loop.stop();
   }, [stripW, drift, layer]);
 
-  const Strip = (
+  const Strip = useMemo(() => (
     <Svg width={stripW} height={h} viewBox="0 0 1400 220">
       <Defs>
         <LinearGradient
@@ -127,11 +127,16 @@ export function CloudBank({
       </Defs>
       <Puffs clouds={clouds} floor={floor} gradId={gradId} />
     </Svg>
-  );
+  ), [stripW, h, floor, gradId, clouds, grad]);
 
   return (
     <View style={[{ height: h, overflow: "hidden" }, style]} pointerEvents="none">
+      {/* renderToHardwareTextureAndroid: bake the two strips into ONE GPU
+          texture so the endless drift is a cheap texture translate instead of
+          re-compositing ~110 vector circles every frame. */}
       <Animated.View
+        renderToHardwareTextureAndroid
+        shouldRasterizeIOS
         style={{ flexDirection: "row", width: stripW * 2, transform: [{ translateX: tx }] }}>
         {Strip}
         {Strip}
@@ -140,8 +145,10 @@ export function CloudBank({
   );
 }
 
+export const CloudBank = memo(CloudBankBase);
+
 /** A single static cloud silhouette (e.g. under the welcome mark). */
-export function StillCloud({ width, style }: { width: number; style?: ViewStyle }) {
+function StillCloudBase({ width, style }: { width: number; style?: ViewStyle }) {
   const h = width * (264 / 420);
   const grad = [
     { o: 0, c: "#FFFFFF", op: 0.96 }, { o: 0.55, c: "#F1E5FF", op: 0.86 }, { o: 1, c: "#DCC8F8", op: 0.62 },
@@ -163,3 +170,5 @@ export function StillCloud({ width, style }: { width: number; style?: ViewStyle 
     </View>
   );
 }
+
+export const StillCloud = memo(StillCloudBase);

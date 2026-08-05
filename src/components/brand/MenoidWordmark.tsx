@@ -9,7 +9,7 @@ import Svg, { Defs, LinearGradient, Stop, G, Path, Circle } from "react-native-s
 
 let counter = 0;
 
-export default function MenoidWordmark({
+function MenoidWordmarkBase({
   width,
   height,
   tone = "light",
@@ -54,3 +54,5 @@ export default function MenoidWordmark({
     </Svg>
   );
 }
+
+export default React.memo(MenoidWordmarkBase);
