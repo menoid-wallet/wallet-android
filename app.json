@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "Menoid",
+    "slug": "wallet-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "menoid",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#a98ce6",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "codes.menoid.wallet",
+      "adaptiveIcon": {
+        "backgroundColor": "#4E2F8E",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-font",
+      "expo-splash-screen"
+    ]
+  }
+}
