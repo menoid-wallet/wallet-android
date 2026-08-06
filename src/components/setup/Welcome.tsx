@@ -8,10 +8,12 @@
  * Both flows end by calling onDone(), which App turns into the lock screen.
  */
 import React, { useCallback, useRef, useState } from "react";
+import { InteractionManager } from "react-native";
 import { View, Text, Pressable, StyleSheet, useWindowDimensions, ActivityIndicator } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StillCloud } from "../brand/Clouds";
+import { generateMnemonicOnly } from "../../crypto/keyDerivation";
 import AnimatedLogo from "../brand/AnimatedLogo";
 import MenoidWordmark from "../brand/MenoidWordmark";
 import CloudChip from "../brand/CloudChip";
@@ -23,6 +25,12 @@ import ImportWallet from "./ImportWallet";
 
 type Screen = "intro" | "choose" | "create" | "import";
 
+/** Resolves after the next commit has been painted (two frames to be sure). */
+const nextPaint = () =>
+  new Promise<void>((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+  );
+
 export default function Welcome({ onDone }: { onDone: () => void }) {
   const [screen, setScreen] = useState<Screen>("intro");
   const dir = useRef<"forward" | "back">("forward");
@@ -30,6 +38,23 @@ export default function Welcome({ onDone }: { onDone: () => void }) {
     dir.current = d;
     setScreen(next);
   };
+
+  /* The recovery phrase is prepared HERE, before navigating, so the transition
+     into the flow has no work left to do — and it is CACHED for the session, so
+     going back and pressing Create again is instant.
+     Deliberately in memory only: an unencrypted mnemonic must never be written
+     to disk, which is the whole point of the encrypted vault it ends up in. */
+  const [seed, setSeed] = useState("");
+  const [seedError, setSeedError] = useState("");
+
+  const prepareSeed = useCallback(async () => {
+    if (seed) return; // already generated this session
+    try {
+      setSeed(generateMnemonicOnly().mnemonic);
+    } catch (e: any) {
+      setSeedError("Failed to generate wallet: " + (e?.message ?? String(e)));
+    }
+  }, [seed]);
 
   /* Every screen — including the two flows — goes through the transition.
      Returning CreateWallet/ImportWallet above it (as this used to) made
@@ -41,11 +66,17 @@ export default function Welcome({ onDone }: { onDone: () => void }) {
       ) : screen === "choose" ? (
         <Choose
           onBack={() => go("intro", "back")}
+          prepareSeed={prepareSeed}
           onCreate={() => go("create")}
           onImport={() => go("import")}
         />
       ) : screen === "create" ? (
-        <CreateWallet onBack={() => go("choose", "back")} onCreated={onDone} />
+        <CreateWallet
+          mnemonic={seed}
+          genError={seedError}
+          onBack={() => go("choose", "back")}
+          onCreated={onDone}
+        />
       ) : (
         <ImportWallet onBack={() => go("choose", "back")} onImported={onDone} />
       )}
@@ -111,19 +142,32 @@ function Choose({
   onBack,
   onCreate,
   onImport,
+  prepareSeed,
 }: {
   onBack: () => void;
   onCreate: () => void;
   onImport: () => void;
+  prepareSeed: () => Promise<void>;
 }) {
   const insets = useSafeAreaInsets();
-  /* The pressed door marks itself busy for the length of the transition so a
-     second tap can't queue another one; the flow itself now animates in, and
-     the seed phrase is generated after the animation (see CreateWallet). */
+  /* Press → spinner → do the work → THEN transition. Navigating first meant the
+     flow mounted and generated its phrase mid-animation, which is what made the
+     page feel stuck for a moment on the way in. */
   const [busy, setBusy] = useState<"create" | "import" | null>(null);
-  const start = (which: "create" | "import", run: () => void) => {
+  const start = async (which: "create" | "import", run: () => void) => {
     if (busy) return;
     setBusy(which);
+
+    /* WAIT FOR THE SPINNER TO ACTUALLY PAINT before doing anything heavy.
+       Generating a phrase blocks the JS thread, so on the FIRST press the
+       busy state was still queued when the block started and never appeared —
+       only later presses (phrase already cached, nothing to block on) showed
+       it. Two frames is the reliable way to know a commit has been painted. */
+    await nextPaint();
+
+    const floor = new Promise((r) => setTimeout(r, 200));
+    const work = which === "create" ? prepareSeed() : Promise.resolve();
+    await Promise.all([work, floor]);
     run();
   };
 
@@ -308,7 +352,7 @@ const styles = StyleSheet.create({
     maxWidth: 330,
   },
 
-  doors: { width: "100%", maxWidth: 400, gap: 30, marginTop: 42 },
+  doors: { width: "100%", maxWidth: 400, gap: 46, marginTop: 34 },
   doorContent: { gap: 16, paddingHorizontal: 22, paddingVertical: 20 },
   doorDisc: {
     width: 46,

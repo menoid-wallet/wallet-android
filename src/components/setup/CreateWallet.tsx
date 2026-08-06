@@ -5,11 +5,11 @@
  *   password → set the encryption password (derive → encrypt → store)
  * On success it calls onCreated(), and App hands over to the lock screen.
  */
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { View, Text, Pressable, StyleSheet, InteractionManager } from "react-native";
+import React, { useCallback, useRef, useState } from "react";
+import { View, Text, Pressable, StyleSheet } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import Svg, { Path } from "react-native-svg";
-import { generateMnemonicOnly, importFromMnemonic } from "../../crypto/keyDerivation";
+import { importFromMnemonic } from "../../crypto/keyDerivation";
 import { passwordStrength } from "../../crypto/walletCrypto";
 import { createInitialState } from "../../lib/wallets";
 import { useBackHandler } from "../../lib/useBackHandler";
@@ -34,15 +34,20 @@ type Step = "seed" | "name" | "password";
 const ORDER: Step[] = ["seed", "name", "password"];
 
 export default function CreateWallet({
+  mnemonic,
+  genError,
   onBack,
   onCreated,
 }: {
+  /** Prepared by Welcome BEFORE this screen mounts, and cached there for the
+   *  session — so arriving here costs nothing and the stage transition is
+   *  never competing with entropy + BIP-39 work. */
+  mnemonic: string;
+  genError?: string;
   onBack: () => void;
   onCreated: () => void;
 }) {
   const [step, setStep] = useState<Step>("seed");
-  const [mnemonic, setMnemonic] = useState("");
-  const [genError, setGenError] = useState("");
   const [copied, setCopied] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
 
@@ -77,21 +82,6 @@ export default function CreateWallet({
     return true;
   }, [step, saving, onBack]);
   useBackHandler(goBack);
-
-  /* Generating a mnemonic is real work (entropy + BIP-39) and this screen
-     mounts DURING the stage transition, so doing it inline stalls the
-     animation. Wait until the animation has settled; the word chips render as
-     placeholders for those few frames. */
-  useEffect(() => {
-    const task = InteractionManager.runAfterInteractions(() => {
-      try {
-        setMnemonic(generateMnemonicOnly().mnemonic);
-      } catch (e: any) {
-        setGenError("Failed to generate wallet: " + (e?.message ?? String(e)));
-      }
-    });
-    return () => task.cancel();
-  }, []);
 
   async function copyPhrase() {
     if (!mnemonic) return;

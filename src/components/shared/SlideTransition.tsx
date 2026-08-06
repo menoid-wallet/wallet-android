@@ -117,14 +117,23 @@ export default function SlideTransition({
 
   return (
     <View style={styles.fill}>
+      {/* Both layers are baked into GPU textures for the length of the
+          animation. Without this, every frame re-rasterises two entire
+          screens' worth of vector art (the welcome mark, its cloud, the cloud
+          doors) just to scale and fade them — which is why the welcome → choose
+          move felt rougher than the panel-to-panel ones. */}
       <Animated.View
         key={leaving.key}
         pointerEvents="none"
+        renderToHardwareTextureAndroid
+        shouldRasterizeIOS
         style={[styles.layer, { opacity: leaveFade, transform: [{ scale: leaveScale }] }]}>
         {leaving.node}
       </Animated.View>
       <Animated.View
         key={routeKey}
+        renderToHardwareTextureAndroid
+        shouldRasterizeIOS
         style={[
           styles.layer,
           /* Until the animation is armed, hold the incoming screen off-screen

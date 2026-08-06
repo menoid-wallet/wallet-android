@@ -157,12 +157,24 @@ export default memo(function CloudChip({
       <Pressable
         onPress={onPress}
         disabled={disabled}
-        /* The lobes bulge OUTSIDE the pressable's box, so the visible cloud is
-           taller than the touch target — taps on the puffs did nothing and the
-           button felt like it needed to be hit exactly. Extend the target over
-           the lobes and a little beyond. */
-        hitSlop={{ top: over + 10, bottom: over + 10, left: 12, right: 12 }}
+        /* THE TOUCH TARGET IS THE WHOLE CLOUD.
+           The lobes are drawn OUTSIDE the content box, so the box alone covers
+           barely more than the label — which is why the button only responded
+           to taps on its text. `hitSlop` was supposed to cover that and does
+           not do the job here, so the Pressable is given real PADDING the size
+           of the lobe overflow (plus a margin), and an equal NEGATIVE MARGIN so
+           the surrounding layout is completely unchanged. Padding is part of
+           the view, so it is unambiguously touchable on every platform. */
+        /* Padding is exactly the lobe overflow — no more. Overshooting it made
+           neighbouring clouds' targets overlap, and a tap in the gap between
+           the two doors went to whichever was drawn last. */
         style={({ pressed }) => [
+          {
+            paddingVertical: over,
+            marginVertical: -over,
+            paddingHorizontal: 8,
+            marginHorizontal: -8,
+          },
           fullWidth && { alignSelf: "stretch" },
           pressed && !disabled && { transform: [{ scale: 0.975 }] },
         ]}>

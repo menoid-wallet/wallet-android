@@ -97,7 +97,9 @@ export function SetupShell({
           <ScrollView
             contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 200 }]}
             keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}>
+            showsVerticalScrollIndicator={false}
+            overScrollMode="never"
+            removeClippedSubviews>
             {children}
           </ScrollView>
         </SlideTransition>
@@ -112,6 +114,12 @@ export function SetupShell({
 export function Panel({ children, style }: { children: React.ReactNode; style?: ViewStyle }) {
   return (
     <View style={[styles.panel, style]}>
+      {/* A near-opaque scrim UNDER the white glaze. The card sits above the
+          cloud floor in z-order already, but at 17% white the clouds read
+          straight through it and it looked like the card was behind them.
+          Scrim + glaze keeps the frosted-glass feel while hiding what is
+          behind. */}
+      <View style={styles.panelScrim} pointerEvents="none" />
       {/* inner top highlight — the lip of light along the top edge */}
       <View style={styles.panelHighlight} pointerEvents="none" />
       {children}
@@ -323,6 +331,14 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.17)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.3)",
+  },
+  panelScrim: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(158,130,224,0.82)",
   },
   panelHighlight: {
     position: "absolute",
