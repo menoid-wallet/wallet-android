@@ -21,16 +21,15 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
-  useWindowDimensions,
   ViewStyle,
 } from "react-native";
 import Svg, { G, Path } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Sky from "../brand/Sky";
-import { CloudBank } from "../brand/Clouds";
 import AnimatedLogo from "../brand/AnimatedLogo";
 import MenoidWordmark from "../brand/MenoidWordmark";
 import CloudChip from "../brand/CloudChip";
+import SlideTransition from "../shared/SlideTransition";
+import PasswordField from "../shared/PasswordField";
 import { COLORS, FONT } from "../../theme/tokens";
 
 const VIOLET = COLORS.violetDeep;
@@ -40,27 +39,21 @@ export function SetupShell({
   steps,
   step,
   onBack,
+  direction = "forward",
   children,
 }: {
   steps: string[];
   step: string;
   onBack: () => void;
+  /** which way the next step should slide in from */
+  direction?: "forward" | "back";
   children: React.ReactNode;
 }) {
-  const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const idx = steps.indexOf(step);
 
   return (
     <View style={styles.fill}>
-      <Sky width={width} height={height} />
-      <CloudBank layer="mid" viewportWidth={width} style={{ position: "absolute", top: 0, left: 0 }} />
-      {/* The cloud floor is WEATHER, so it is painted before the content — a
-          bank rendered after the ScrollView draws on top of it and swallows the
-          bottom of a tall card (the 12-word phrase panel). Clouds still show
-          through wherever the content is transparent. */}
-      <CloudBank layer="near" viewportWidth={width} style={{ position: "absolute", bottom: 0, left: 0 }} />
-
       <KeyboardAvoidingView
         style={styles.fill}
         behavior={Platform.OS === "ios" ? "padding" : undefined}>
@@ -99,12 +92,15 @@ export function SetupShell({
           <Text style={styles.backText}>Back</Text>
         </Pressable>
 
-        <ScrollView
-          contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 200 }]}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}>
-          {children}
-        </ScrollView>
+        {/* Each step slides in; the previous one slides out. */}
+        <SlideTransition routeKey={step} direction={direction}>
+          <ScrollView
+            contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 200 }]}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}>
+            {children}
+          </ScrollView>
+        </SlideTransition>
       </KeyboardAvoidingView>
     </View>
   );
@@ -174,6 +170,35 @@ export function Field({
 
 export function TextArea(props: React.ComponentProps<typeof TextInput> & { invalid?: boolean }) {
   return <Field multiline textAlignVertical="top" style={styles.textArea} {...props} />;
+}
+
+/** Password entry in a panel: same slow-reveal beads as the lock screen. */
+export function PasswordInput({
+  value,
+  onChangeText,
+  placeholder,
+  invalid,
+  onSubmitEditing,
+}: {
+  value: string;
+  onChangeText: (t: string) => void;
+  placeholder?: string;
+  invalid?: boolean;
+  onSubmitEditing?: () => void;
+}) {
+  return (
+    <View style={[styles.field, styles.passwordBox, invalid && styles.fieldInvalid]}>
+      <PasswordField
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        onSubmitEditing={onSubmitEditing}
+        tone="white"
+        dotSize={9}
+        advance={20}
+      />
+    </View>
+  );
 }
 
 /** The primary action: a white cloud with violet type. */
@@ -368,6 +393,8 @@ const styles = StyleSheet.create({
     color: "#fff",
   },
   fieldInvalid: { borderColor: "rgba(255,190,205,0.6)" },
+  // the beads render their own height, so the box just needs a comfortable one
+  passwordBox: { paddingVertical: 0, minHeight: 58, justifyContent: "center" },
   textArea: { minHeight: 110, paddingTop: 16, fontSize: 16, lineHeight: 24 },
 
   cloudBtn: { paddingHorizontal: 24, paddingVertical: 17 },

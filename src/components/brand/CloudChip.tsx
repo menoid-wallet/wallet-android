@@ -1,24 +1,25 @@
 /**
  * CloudChip.tsx — the cloud shape every pill, button and card takes.
  *
- * Ported properly from the extension: a body (a pill for chips, a rounded card
- * for larger surfaces) with elliptical lobes bulging off the top and bottom
- * edges. Lobes are opaque and share the body's colour, so they merge into one
- * seamless silhouette; the body is drawn LAST so it covers where they meet it.
+ * DRAWS ON THE FIRST FRAME. The previous version measured itself with
+ * onLayout and rendered `null` until that state landed, so on every screen's
+ * first paint the clouds were invisible — the label appeared instantly and the
+ * cloud popped in a render later. During a 320ms screen slide that meant the
+ * incoming screen was text-only for most of the transition, which read as
+ * "no transition, and the buttons load late".
  *
- * The geometry is computed in real pixels from the measured box — NOT a fixed
- * viewBox stretched with preserveAspectRatio="none", which squashes every lobe
- * into a lumpy ellipse and is what made the first attempt look wrong.
- *
- * Lobe positions/sizes are the extension's: left/width as a fraction of the
- * box, height as a fraction of `lobeBase`, each sitting 38% of its own height
- * proud of the edge.
+ * So nothing here needs to know its own size:
+ *   - the BODY is a plain <View> (absoluteFill + borderRadius)
+ *   - the LOBES live in two SVGs pinned to the top and bottom edges with FIXED
+ *     heights, positioned with percentage cx/rx (which resolve against the
+ *     box's own width) and pixel cy/ry derived from `lobeBase`
+ *   - the body is drawn after the lobes, so it covers where they meet it
  */
-import React, { memo, useState } from "react";
-import { View, Pressable, StyleSheet, ViewStyle, LayoutChangeEvent } from "react-native";
-import Svg, { Rect, Ellipse, G } from "react-native-svg";
+import React, { memo } from "react";
+import { View, Pressable, StyleSheet, ViewStyle } from "react-native";
+import Svg, { Ellipse, G } from "react-native-svg";
 
-type Tone = "light" | "violet" | "glass";
+type Tone = "light" | "violet" | "glass" | "loading";
 
 type Lobe = { left: number; width: number; height: number; edge: "top" | "bottom" };
 
@@ -32,76 +33,80 @@ const LOBES: Lobe[] = [
 ];
 
 const toneFill = (tone: Tone) =>
-  tone === "violet" ? "#5E40A8" : tone === "glass" ? "rgba(255,255,255,0.30)" : "#F6EFFF";
+  tone === "violet"
+    ? "#5E40A8"
+    : tone === "glass"
+      ? "rgba(255,255,255,0.30)"
+      : tone === "loading"
+        ? "#DCCBF7" // a violet-tinted cloud: visibly "working", still readable
+        : "#F6EFFF";
 
-/**
- * The silhouette itself, drawn to fill a measured w×h box.
- * `lobeBase` sets how big the bumps are — the box height for a pill, a fixed
- * value for a tall card (or the lobes would be absurd).
- */
-function CloudSurfaceBase({
-  w,
-  h,
-  radius,
-  tone = "light",
-  lobeBase,
-  shadow = true,
+const SHADOW = "rgba(64,36,122,0.16)";
+const SHADOW_DY = 5;
+
+/* A DISABLED cloud must stay OPAQUE. Fading the wrapper with `opacity` makes
+   Android composite each shape separately (RN sets hasOverlappingRendering
+   false), so the lobes and the body stop merging and you see the seams — the
+   cloud visibly falls apart into ellipses and a rounded bar. Dimming the FILL
+   keeps one solid silhouette. */
+const DISABLED_FILL: Record<Tone, string> = {
+  light: "#DED0F4",
+  loading: "#D3C4EE",
+  violet: "#7C68B4",
+  glass: "rgba(255,255,255,0.16)",
+};
+
+/** The lobes along one edge. Fixed height, so it needs no measurement. */
+function LobeBand({
+  edge,
+  base,
+  over,
+  fill,
+  shadow,
 }: {
-  w: number;
-  h: number;
-  radius?: number;
-  tone?: Tone;
-  lobeBase?: number;
-  shadow?: boolean;
+  edge: "top" | "bottom";
+  base: number;
+  over: number;
+  fill: string;
+  shadow: boolean;
 }) {
-  if (w <= 0 || h <= 0) return null;
+  const H = base + 6;
+  const lobes = LOBES.filter((l) => l.edge === edge);
 
-  const fill = toneFill(tone);
-  const base = lobeBase ?? h;
-  const r = radius ?? h / 2;
-  const over = base * 0.42 + 2; // vertical room for the lobes to bulge into
-  const pad = 14; // horizontal + shadow breathing room
-
-  const W = w + pad * 2;
-  const H = h + over * 2 + pad;
-
-  const silhouette = (dy: number, colour: string) => (
+  const draw = (dy: number, colour: string) => (
     <G>
-      {LOBES.map((l, i) => {
+      {lobes.map((l, i) => {
         const lh = base * l.height;
-        const lw = w * l.width;
-        const cx = pad + l.left * w;
-        const cy = (l.edge === "top" ? over + 0.12 * lh : over + h - 0.12 * lh) + dy;
-        return <Ellipse key={i} cx={cx} cy={cy} rx={lw / 2} ry={lh / 2} fill={colour} />;
+        // distance of the lobe's centre from the box edge, in px
+        const inset = over + 0.12 * lh;
+        const cy = edge === "top" ? inset + dy : H - inset + dy;
+        return (
+          <Ellipse
+            key={i}
+            cx={`${l.left * 100}%`}
+            cy={cy}
+            rx={`${(l.width / 2) * 100}%`}
+            ry={lh / 2}
+            fill={colour}
+          />
+        );
       })}
-      {/* body last — it covers the seams where the lobes meet it */}
-      <Rect x={pad} y={over + dy} width={w} height={h} rx={r} ry={r} fill={colour} />
     </G>
   );
 
   return (
     <Svg
-      width={W}
+      width="100%"
       height={H}
-      style={{ position: "absolute", left: -pad, top: -over }}
-      pointerEvents="none">
-      {/* Two offset copies of the silhouette instead of an <FeDropShadow>.
-          An SVG Gaussian blur forces an offscreen pass + blur on EVERY draw of
-          EVERY chip, which was one of the heaviest things on screen. Stacked
-          translucent copies read the same at these sizes and cost two ordinary
-          fills. */}
-      {shadow && silhouette(6, "rgba(64,36,122,0.13)")}
-      {shadow && silhouette(3, "rgba(64,36,122,0.10)")}
-      {silhouette(0, fill)}
+      pointerEvents="none"
+      style={[styles.band, edge === "top" ? { top: -over } : { bottom: -over }]}>
+      {shadow && draw(SHADOW_DY, SHADOW)}
+      {draw(0, fill)}
     </Svg>
   );
 }
 
-/**
- * A cloud with content inside it. Sizes itself to its children (plus padding),
- * measures, then draws the silhouette behind them.
- */
-function CloudChipBase({
+export default memo(function CloudChip({
   children,
   tone = "light",
   onPress,
@@ -109,7 +114,7 @@ function CloudChipBase({
   style,
   contentStyle,
   radius,
-  lobeBase,
+  lobeBase = 32,
   shadow = true,
   fullWidth,
 }: {
@@ -124,24 +129,26 @@ function CloudChipBase({
   shadow?: boolean;
   fullWidth?: boolean;
 }) {
-  const [box, setBox] = useState({ w: 0, h: 0 });
-  const onLayout = (e: LayoutChangeEvent) => {
-    const { width, height } = e.nativeEvent.layout;
-    if (Math.abs(width - box.w) > 0.5 || Math.abs(height - box.h) > 0.5)
-      setBox({ w: width, h: height });
-  };
+  const fill = disabled ? DISABLED_FILL[tone] : toneFill(tone);
+  const over = lobeBase * 0.42 + 2; // how far the lobes stand proud of the box
+  // 9999 makes RN clamp to a perfect pill whatever the height turns out to be
+  const r = radius ?? 9999;
 
   const inner = (
     <View
-      onLayout={onLayout}
-      style={[
-        styles.wrap,
-        fullWidth && { alignSelf: "stretch" },
-        { opacity: disabled ? 0.5 : 1 },
-        style,
-      ]}>
-      <CloudSurface w={box.w} h={box.h} radius={radius} tone={tone} lobeBase={lobeBase} shadow={shadow} />
-      <View style={[styles.content, contentStyle]}>{children}</View>
+      style={[styles.wrap, fullWidth && { alignSelf: "stretch" }, style]}>
+      <LobeBand edge="top" base={lobeBase} over={over} fill={fill} shadow={shadow} />
+      <LobeBand edge="bottom" base={lobeBase} over={over} fill={fill} shadow={shadow} />
+      {shadow && (
+        <View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, { top: SHADOW_DY, backgroundColor: SHADOW, borderRadius: r }]}
+        />
+      )}
+      {/* body last of the shapes — it hides the seams where the lobes meet it */}
+      <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: fill, borderRadius: r }]} />
+      {/* the label may fade on its own — it has nothing to overlap */}
+      <View style={[styles.content, contentStyle, disabled && { opacity: 0.55 }]}>{children}</View>
     </View>
   );
 
@@ -150,6 +157,11 @@ function CloudChipBase({
       <Pressable
         onPress={onPress}
         disabled={disabled}
+        /* The lobes bulge OUTSIDE the pressable's box, so the visible cloud is
+           taller than the touch target — taps on the puffs did nothing and the
+           button felt like it needed to be hit exactly. Extend the target over
+           the lobes and a little beyond. */
+        hitSlop={{ top: over + 10, bottom: over + 10, left: 12, right: 12 }}
         style={({ pressed }) => [
           fullWidth && { alignSelf: "stretch" },
           pressed && !disabled && { transform: [{ scale: 0.975 }] },
@@ -159,16 +171,10 @@ function CloudChipBase({
     );
   }
   return inner;
-}
-
-export const CloudSurface = memo(CloudSurfaceBase);
-export default memo(CloudChipBase);
+});
 
 const styles = StyleSheet.create({
   wrap: { alignSelf: "flex-start", position: "relative", justifyContent: "center" },
-  content: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-  },
+  band: { position: "absolute", left: 0, right: 0 },
+  content: { flexDirection: "row", alignItems: "center", justifyContent: "center" },
 });

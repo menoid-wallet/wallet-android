@@ -6,7 +6,7 @@
  *   password → encrypt + store
  * On success it calls onImported(), and App hands over to the lock screen.
  */
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import { View, Text, Pressable, StyleSheet } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import bs58 from "bs58";
@@ -24,6 +24,7 @@ import {
   Lede,
   Note,
   Panel,
+  PasswordInput,
   SetupShell,
   StrengthMeter,
   TextArea,
@@ -57,11 +58,22 @@ export default function ImportWallet({
   const strength = passwordStrength(password);
 
   /* Android Back steps backwards through the flow; swallowed while saving. */
+  /* Which way the next step should slide. Forward pushes the new step in from
+     the right; Back reverses it, so the flow reads as one strip you move along. */
+  const dir = useRef<"forward" | "back">("forward");
+  const goTo = useCallback((next: Step) => {
+    dir.current = "forward";
+    setStep(next);
+  }, []);
   const goBack = useCallback(() => {
     if (saving) return true;
     const i = ORDER.indexOf(step);
-    if (i <= 0) onBack();
-    else setStep(ORDER[i - 1]);
+    if (i <= 0) {
+      onBack();
+    } else {
+      dir.current = "back";
+      setStep(ORDER[i - 1]);
+    }
     return true;
   }, [step, saving, onBack]);
   useBackHandler(goBack);
@@ -132,6 +144,7 @@ export default function ImportWallet({
     <SetupShell
       steps={ORDER}
       step={step}
+      direction={dir.current}
       onBack={goBack}>
       {step === "method" && (
         <Panel>
@@ -176,7 +189,7 @@ export default function ImportWallet({
           </View>
 
           <View style={{ marginTop: 26 }}>
-            <CloudButton onPress={() => setStep("input")}>Continue</CloudButton>
+            <CloudButton onPress={() => goTo("input")}>Continue</CloudButton>
           </View>
         </Panel>
       )}
@@ -250,7 +263,7 @@ export default function ImportWallet({
           </View>
 
           <View style={{ marginTop: 26 }}>
-            <CloudButton onPress={() => validateInput() && setStep("name")}>Continue</CloudButton>
+            <CloudButton onPress={() => validateInput() && goTo("name")}>Continue</CloudButton>
           </View>
         </Panel>
       )}
@@ -270,12 +283,12 @@ export default function ImportWallet({
               onChangeText={setName}
               placeholder="My Main Account"
               returnKeyType="next"
-              onSubmitEditing={() => name.trim() && setStep("password")}
+              onSubmitEditing={() => name.trim() && goTo("password")}
             />
           </View>
 
           <View style={{ marginTop: 26 }}>
-            <CloudButton disabled={!name.trim()} onPress={() => setStep("password")}>
+            <CloudButton disabled={!name.trim()} onPress={() => goTo("password")}>
               Continue
             </CloudButton>
           </View>
@@ -290,8 +303,7 @@ export default function ImportWallet({
 
           <View style={{ marginTop: 26 }}>
             <Label>Password</Label>
-            <Field
-              secureTextEntry
+            <PasswordInput
               value={password}
               onChangeText={(t) => {
                 setPassword(t);
@@ -306,8 +318,7 @@ export default function ImportWallet({
 
           <View style={{ marginTop: 22 }}>
             <Label>Confirm password</Label>
-            <Field
-              secureTextEntry
+            <PasswordInput
               value={confirmPw}
               invalid={confirmPw.length > 0 && password !== confirmPw}
               onChangeText={setConfirmPw}

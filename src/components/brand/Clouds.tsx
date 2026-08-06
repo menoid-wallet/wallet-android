@@ -147,23 +147,37 @@ function CloudBankBase({
 
 export const CloudBank = memo(CloudBankBase);
 
-/** A single static cloud silhouette (e.g. under the welcome mark). */
+/** A single standalone cumulus — the perch the mark stands on. */
+const PERCH: Puff[] = [
+  { cx: 108, cy: 158, r: 58 },
+  { cx: 176, cy: 128, r: 74 },
+  { cx: 252, cy: 124, r: 78 },
+  { cx: 322, cy: 156, r: 60 },
+  { cx: 150, cy: 186, r: 58 },
+  { cx: 228, cy: 190, r: 62 },
+  { cx: 300, cy: 186, r: 56 },
+];
+
 function StillCloudBase({ width, style }: { width: number; style?: ViewStyle }) {
   const h = width * (264 / 420);
-  const grad = [
-    { o: 0, c: "#FFFFFF", op: 0.96 }, { o: 0.55, c: "#F1E5FF", op: 0.86 }, { o: 1, c: "#DCC8F8", op: 0.62 },
-  ];
   return (
-    <View style={[{ width, height: h }, style]} pointerEvents="none">
-      <Svg width={width} height={h} viewBox="0 -24 420 264">
+    /* The opacity lives on the WRAPPER, not in the gradient. With translucent
+       stops every overlapping puff composites twice and you see a seam around
+       each circle — which made this read as a pile of discs rather than one
+       cloud. Opaque fills merge cleanly, then the whole group is faded once. */
+    <View style={[{ width, height: h, opacity: 0.93 }, style]} pointerEvents="none">
+      <Svg width={width} height={h} viewBox="0 0 420 264">
         <Defs>
-          <LinearGradient id="scloud" x1="0" y1="0" x2="0" y2="216" gradientUnits="userSpaceOnUse">
-            {grad.map((s, i) => (
-              <Stop key={i} offset={s.o} stopColor={s.c} stopOpacity={s.op} />
-            ))}
+          <LinearGradient id="scloud" x1="0" y1="60" x2="0" y2="230" gradientUnits="userSpaceOnUse">
+            <Stop offset="0" stopColor="#FFFFFF" />
+            <Stop offset="0.55" stopColor="#F4EAFF" />
+            <Stop offset="1" stopColor="#DFCEF9" />
           </LinearGradient>
         </Defs>
-        {CLOUD_SHAPES[0].map((p, j) => (
+        {/* a deck welds the puffs into one flat-bottomed silhouette; it is
+            inset so the end puffs always cover its corners */}
+        <Rect x={110} y={150} width={200} height={78} fill="url(#scloud)" />
+        {PERCH.map((p, j) => (
           <Circle key={j} cx={p.cx} cy={p.cy} r={p.r} fill="url(#scloud)" />
         ))}
       </Svg>

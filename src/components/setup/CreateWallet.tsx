@@ -5,8 +5,8 @@
  *   password → set the encryption password (derive → encrypt → store)
  * On success it calls onCreated(), and App hands over to the lock screen.
  */
-import React, { useCallback, useEffect, useState } from "react";
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { View, Text, Pressable, StyleSheet, InteractionManager } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import Svg, { Path } from "react-native-svg";
 import { generateMnemonicOnly, importFromMnemonic } from "../../crypto/keyDerivation";
@@ -24,6 +24,7 @@ import {
   Lede,
   Note,
   Panel,
+  PasswordInput,
   SetupShell,
   StrengthMeter,
   Title,
@@ -57,21 +58,39 @@ export default function CreateWallet({
   /* Android Back steps backwards through the flow instead of leaving the app.
      While the keys are being derived/encrypted it is swallowed entirely — the
      wallet is mid-write and unmounting here would lose it. */
+  /* Which way the next step should slide. Forward pushes the new step in from
+     the right; Back reverses it, so the flow reads as one strip you move along. */
+  const dir = useRef<"forward" | "back">("forward");
+  const goTo = useCallback((next: Step) => {
+    dir.current = "forward";
+    setStep(next);
+  }, []);
   const goBack = useCallback(() => {
     if (saving) return true;
     const i = ORDER.indexOf(step);
-    if (i <= 0) onBack();
-    else setStep(ORDER[i - 1]);
+    if (i <= 0) {
+      onBack();
+    } else {
+      dir.current = "back";
+      setStep(ORDER[i - 1]);
+    }
     return true;
   }, [step, saving, onBack]);
   useBackHandler(goBack);
 
+  /* Generating a mnemonic is real work (entropy + BIP-39) and this screen
+     mounts DURING the stage transition, so doing it inline stalls the
+     animation. Wait until the animation has settled; the word chips render as
+     placeholders for those few frames. */
   useEffect(() => {
-    try {
-      setMnemonic(generateMnemonicOnly().mnemonic);
-    } catch (e: any) {
-      setGenError("Failed to generate wallet: " + (e?.message ?? String(e)));
-    }
+    const task = InteractionManager.runAfterInteractions(() => {
+      try {
+        setMnemonic(generateMnemonicOnly().mnemonic);
+      } catch (e: any) {
+        setGenError("Failed to generate wallet: " + (e?.message ?? String(e)));
+      }
+    });
+    return () => task.cancel();
   }, []);
 
   async function copyPhrase() {
@@ -109,6 +128,7 @@ export default function CreateWallet({
     <SetupShell
       steps={ORDER}
       step={step}
+      direction={dir.current}
       onBack={goBack}>
       {step === "seed" && (
         <Panel>
@@ -164,7 +184,7 @@ export default function CreateWallet({
           </Pressable>
 
           <View style={{ marginTop: 24 }}>
-            <CloudButton disabled={!confirmed || !mnemonic} onPress={() => setStep("name")}>
+            <CloudButton disabled={!confirmed || !mnemonic} onPress={() => goTo("name")}>
               Continue
             </CloudButton>
           </View>
@@ -186,12 +206,12 @@ export default function CreateWallet({
               onChangeText={setLabel}
               placeholder="My Main Account"
               returnKeyType="next"
-              onSubmitEditing={() => label.trim() && setStep("password")}
+              onSubmitEditing={() => label.trim() && goTo("password")}
             />
           </View>
 
           <View style={{ marginTop: 26 }}>
-            <CloudButton disabled={!label.trim()} onPress={() => setStep("password")}>
+            <CloudButton disabled={!label.trim()} onPress={() => goTo("password")}>
               Continue
             </CloudButton>
           </View>
@@ -206,8 +226,7 @@ export default function CreateWallet({
 
           <View style={{ marginTop: 26 }}>
             <Label>Password</Label>
-            <Field
-              secureTextEntry
+            <PasswordInput
               value={password}
               onChangeText={(t) => {
                 setPassword(t);
@@ -222,8 +241,7 @@ export default function CreateWallet({
 
           <View style={{ marginTop: 22 }}>
             <Label>Confirm password</Label>
-            <Field
-              secureTextEntry
+            <PasswordInput
               value={confirmPw}
               invalid={confirmPw.length > 0 && password !== confirmPw}
               onChangeText={setConfirmPw}

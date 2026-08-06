@@ -7,17 +7,17 @@
  *
  * Both flows end by calling onDone(), which App turns into the lock screen.
  */
-import React, { useCallback, useState } from "react";
-import { View, Text, Pressable, StyleSheet, useWindowDimensions } from "react-native";
+import React, { useCallback, useRef, useState } from "react";
+import { View, Text, Pressable, StyleSheet, useWindowDimensions, ActivityIndicator } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Sky from "../brand/Sky";
-import { CloudBank, StillCloud } from "../brand/Clouds";
+import { StillCloud } from "../brand/Clouds";
 import AnimatedLogo from "../brand/AnimatedLogo";
 import MenoidWordmark from "../brand/MenoidWordmark";
 import CloudChip from "../brand/CloudChip";
 import { COLORS, FONT } from "../../theme/tokens";
 import { useBackHandler } from "../../lib/useBackHandler";
+import SlideTransition from "../shared/SlideTransition";
 import CreateWallet from "./CreateWallet";
 import ImportWallet from "./ImportWallet";
 
@@ -25,56 +25,71 @@ type Screen = "intro" | "choose" | "create" | "import";
 
 export default function Welcome({ onDone }: { onDone: () => void }) {
   const [screen, setScreen] = useState<Screen>("intro");
+  const dir = useRef<"forward" | "back">("forward");
+  const go = (next: Screen, d: "forward" | "back" = "forward") => {
+    dir.current = d;
+    setScreen(next);
+  };
 
-  if (screen === "create") return <CreateWallet onBack={() => setScreen("choose")} onCreated={onDone} />;
-  if (screen === "import") return <ImportWallet onBack={() => setScreen("choose")} onImported={onDone} />;
-
-  return screen === "intro" ? (
-    <Intro onNext={() => setScreen("choose")} />
-  ) : (
-    <Choose
-      onBack={() => setScreen("intro")}
-      onCreate={() => setScreen("create")}
-      onImport={() => setScreen("import")}
-    />
+  /* Every screen — including the two flows — goes through the transition.
+     Returning CreateWallet/ImportWallet above it (as this used to) made
+     choose → seed phrase a hard cut with no animation at all. */
+  return (
+    <SlideTransition routeKey={screen} direction={dir.current}>
+      {screen === "intro" ? (
+        <Intro onNext={() => go("choose")} />
+      ) : screen === "choose" ? (
+        <Choose
+          onBack={() => go("intro", "back")}
+          onCreate={() => go("create")}
+          onImport={() => go("import")}
+        />
+      ) : screen === "create" ? (
+        <CreateWallet onBack={() => go("choose", "back")} onCreated={onDone} />
+      ) : (
+        <ImportWallet onBack={() => go("choose", "back")} onImported={onDone} />
+      )}
+    </SlideTransition>
   );
 }
 
 /* ── intro ─────────────────────────────────────────────────────────────────── */
 function Intro({ onNext }: { onNext: () => void }) {
-  const { width, height } = useWindowDimensions();
+  const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const markSize = Math.min(width * 0.46, 188);
 
   return (
     <View style={styles.fill}>
-      <Sky width={width} height={height} />
-      <CloudBank layer="mid" viewportWidth={width} style={{ position: "absolute", top: 0, left: 0 }} />
-
       <View style={{ position: "absolute", top: insets.top + 14, alignSelf: "center", zIndex: 20 }}>
         <CloudChip contentStyle={styles.wordChip} lobeBase={28}>
           <MenoidWordmark height={15} tone="violet" />
         </CloudChip>
       </View>
 
-      <View style={[styles.center, { paddingBottom: insets.bottom + 90 }]}>
+      {/* The copy block owns the middle of the sky; the arrow is parked on the
+          floor. Previously everything was one centred stack, which left the
+          whole page hugging the top with dead space beneath it. */}
+      <View style={[styles.introBody, { paddingTop: insets.top + 70 }]}>
         {/* The mark standing ON its cloud: the cloud is drawn FIRST (so it sits
             behind the opaque artwork) and pinned to the base of the block, so
             it peeks out around the mark's feet instead of covering it. */}
-        <View style={{ alignItems: "center", marginBottom: 34, height: markSize }}>
+        <View style={{ alignItems: "center", marginBottom: 40, height: markSize * 1.12 }}>
           <StillCloud
-            width={markSize * 1.5}
-            style={{ position: "absolute", bottom: -markSize * 0.16, opacity: 0.97 }}
+            width={markSize * 1.62}
+            style={{ position: "absolute", bottom: 0, opacity: 0.97 }}
           />
           <AnimatedLogo size={markSize} float blink />
         </View>
 
         <Text style={styles.welcome}>Welcome to Menoid</Text>
         <Text style={styles.tagline}>Your entry point to the private crypto world</Text>
+      </View>
 
+      <View style={[styles.introFoot, { paddingBottom: insets.bottom + 84 }]}>
         <Pressable
           onPress={onNext}
-          hitSlop={10}
+          hitSlop={14}
           style={({ pressed }) => [styles.next, pressed && { transform: [{ scale: 0.93 }] }]}>
           <Svg width={30} height={22} viewBox="0 0 22 16" fill="none">
             <Path
@@ -87,8 +102,6 @@ function Intro({ onNext }: { onNext: () => void }) {
           </Svg>
         </Pressable>
       </View>
-
-      <CloudBank layer="near" viewportWidth={width} style={{ position: "absolute", bottom: 0, left: 0 }} />
     </View>
   );
 }
@@ -103,8 +116,16 @@ function Choose({
   onCreate: () => void;
   onImport: () => void;
 }) {
-  const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
+  /* The pressed door marks itself busy for the length of the transition so a
+     second tap can't queue another one; the flow itself now animates in, and
+     the seed phrase is generated after the animation (see CreateWallet). */
+  const [busy, setBusy] = useState<"create" | "import" | null>(null);
+  const start = (which: "create" | "import", run: () => void) => {
+    if (busy) return;
+    setBusy(which);
+    run();
+  };
 
   // Back returns to the greeting rather than leaving the app.
   useBackHandler(
@@ -116,9 +137,6 @@ function Choose({
 
   return (
     <View style={styles.fill}>
-      <Sky width={width} height={height} />
-      <CloudBank layer="mid" viewportWidth={width} style={{ position: "absolute", top: 0, left: 0 }} />
-
       <View style={{ position: "absolute", top: insets.top + 12, left: 18, zIndex: 20 }}>
         <Pressable onPress={onBack} hitSlop={16} style={styles.backBtn}>
           <Svg width={20} height={11} viewBox="0 0 18 9" fill="none">
@@ -144,13 +162,17 @@ function Choose({
           <Door
             title="Create wallet"
             desc="A new private account."
-            onPress={onCreate}
+            busy={busy === "create"}
+            dimmed={busy !== null && busy !== "create"}
+            onPress={() => start("create", onCreate)}
             glyph={<Path d="M9 1V17M1 9H17" stroke="#fff" strokeWidth={2.2} strokeLinecap="round" />}
           />
           <Door
             title="Import wallet"
             desc="From a seed phrase or key."
-            onPress={onImport}
+            busy={busy === "import"}
+            dimmed={busy !== null && busy !== "import"}
+            onPress={() => start("import", onImport)}
             glyph={
               <Path
                 d="M17 9H5M5 9L9 5M5 9L9 13M1 1V17"
@@ -163,8 +185,6 @@ function Choose({
           />
         </View>
       </View>
-
-      <CloudBank layer="near" viewportWidth={width} style={{ position: "absolute", bottom: 0, left: 0 }} />
     </View>
   );
 }
@@ -179,31 +199,48 @@ function Door({
   desc,
   glyph,
   onPress,
+  busy,
+  dimmed,
 }: {
   title: string;
   desc: string;
   glyph: React.ReactNode;
   onPress: () => void;
+  busy?: boolean;
+  dimmed?: boolean;
 }) {
   return (
-    <CloudChip fullWidth onPress={onPress} radius={26} lobeBase={40} contentStyle={styles.doorContent}>
-      <View style={styles.doorDisc}>
-        <Svg width={18} height={18} viewBox="0 0 18 18" fill="none">
-          {glyph}
-        </Svg>
+    <CloudChip
+      fullWidth
+      onPress={onPress}
+      disabled={busy || dimmed}
+      radius={26}
+      lobeBase={40}
+      tone={busy ? "loading" : "light"}
+      contentStyle={styles.doorContent}>
+      <View style={[styles.doorDisc, busy && { backgroundColor: "#6F4FC4" }]}>
+        {busy ? (
+          <ActivityIndicator size="small" color="#fff" />
+        ) : (
+          <Svg width={18} height={18} viewBox="0 0 18 18" fill="none">
+            {glyph}
+          </Svg>
+        )}
       </View>
       <View style={{ flex: 1 }}>
-        <Text style={styles.doorTitle}>{title}</Text>
-        <Text style={styles.doorDesc}>{desc}</Text>
+        <Text style={styles.doorTitle}>{busy ? "Just a moment…" : title}</Text>
+        <Text style={styles.doorDesc}>{busy ? "Preparing your wallet." : desc}</Text>
       </View>
-      <Svg width={22} height={10} viewBox="0 0 22 9" fill="none">
-        <Path
-          d="M0 4.5H20M20 4.5L16.5 1M20 4.5L16.5 8"
-          stroke={COLORS.violetDeep}
-          strokeWidth={1.6}
-          strokeLinecap="round"
-        />
-      </Svg>
+      {!busy && (
+        <Svg width={22} height={10} viewBox="0 0 22 9" fill="none">
+          <Path
+            d="M0 4.5H20M20 4.5L16.5 1M20 4.5L16.5 8"
+            stroke={COLORS.violetDeep}
+            strokeWidth={1.6}
+            strokeLinecap="round"
+          />
+        </Svg>
+      )}
     </CloudChip>
   );
 }
@@ -211,6 +248,8 @@ function Door({
 const styles = StyleSheet.create({
   fill: { flex: 1 },
   center: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 26 },
+  introBody: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 26 },
+  introFoot: { alignItems: "center" },
   wordChip: { paddingHorizontal: 20, paddingVertical: 8 },
 
   backBtn: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 8 },

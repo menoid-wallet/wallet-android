@@ -12,7 +12,7 @@
  * Only the smile is still SVG, and it is static and memoised, so it rasterises
  * once and never re-renders.
  */
-import React, { memo, useEffect, useRef } from "react";
+import React, { memo, useCallback, useEffect, useRef } from "react";
 import { Animated, Easing, Image, View, StyleSheet, ViewStyle } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import Svg, { Defs, LinearGradient as SvgGradient, Stop, Path } from "react-native-svg";
@@ -38,10 +38,12 @@ const Eye = memo(function Eye({
   size,
   x,
   lid,
+  aim,
 }: {
   size: number;
   x: number;
   lid: Animated.Value;
+  aim: Animated.ValueXY;
 }) {
   const w = size * EYE.w;
   const h = size * EYE.h;
@@ -57,12 +59,19 @@ const Eye = memo(function Eye({
           {
             left: size * (x + EYE.underlayDx),
             backgroundColor: "#ffffff",
-            transform: [{ scaleY: lid }],
+            transform: [{ translateX: aim.x }, { translateY: aim.y }, { scaleY: lid }],
           },
         ]}
       />
       <Animated.View
-        style={[box, { left: size * x, overflow: "hidden", transform: [{ scaleY: lid }] }]}>
+        style={[
+          box,
+          {
+            left: size * x,
+            overflow: "hidden",
+            transform: [{ translateX: aim.x }, { translateY: aim.y }, { scaleY: lid }],
+          },
+        ]}>
         <LinearGradient
           colors={IRIS as unknown as readonly [string, string, ...string[]]}
           locations={IRIS_STOPS as unknown as readonly [number, number, ...number[]]}
@@ -89,19 +98,63 @@ const Smile = memo(function Smile() {
   );
 });
 
+export type GazePoint = { x: number; y: number };
+
 function AnimatedLogoBase({
   size = 120,
   style,
   blink = true,
   float = false,
+  gaze = null,
 }: {
   size?: number;
   style?: ViewStyle;
   blink?: boolean;
   float?: boolean;
+  /** A point in WINDOW coordinates for the eyes to follow. */
+  gaze?: GazePoint | null;
 }) {
   const lid = useRef(new Animated.Value(1)).current;
   const bob = useRef(new Animated.Value(0)).current;
+  const aimL = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const aimR = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const hostRef = useRef<View | null>(null);
+  const origin = useRef<{ x: number; y: number } | null>(null);
+
+  const measure = useCallback(() => {
+    hostRef.current?.measureInWindow((x, y, w, h) => {
+      if (w || h) origin.current = { x, y };
+    });
+  }, []);
+
+  /* Each eye is aimed from ITS OWN socket, which is what makes the pair
+     converge on something between them and run parallel for something far off
+     to one side — the same geometry as the extension's mark. */
+  useEffect(() => {
+    const travelX = size * (66 / 1024);
+    const travelY = size * (40 / 1024);
+    const reach = size * 1.7;
+
+    const solve = (xFrac: number) => {
+      const o = origin.current;
+      if (!o || !gaze) return { x: 0, y: 0 };
+      const cx = o.x + size * (xFrac + EYE.w / 2);
+      const cy = o.y + size * (EYE.y + EYE.h / 2);
+      const dx = gaze.x - cx;
+      const dy = gaze.y - cy;
+      const dist = Math.hypot(dx, dy);
+      if (dist < 1) return { x: 0, y: 0 };
+      const k = Math.min(1, dist / reach);
+      return { x: (dx / dist) * k * travelX, y: (dy / dist) * k * travelY };
+    };
+
+    const l = solve(EYE.leftX);
+    const r = solve(EYE.rightX);
+    Animated.parallel([
+      Animated.timing(aimL, { toValue: l, duration: 220, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+      Animated.timing(aimR, { toValue: r, duration: 220, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+    ]).start();
+  }, [gaze?.x, gaze?.y, size, aimL, aimR]);
 
   useEffect(() => {
     if (!blink) return;
@@ -135,11 +188,15 @@ function AnimatedLogoBase({
   const translateY = bob.interpolate({ inputRange: [0, 1], outputRange: [0, -size * 0.05] });
 
   return (
-    <Animated.View style={[{ width: size, height: size, transform: [{ translateY }] }, style]}>
+    <Animated.View
+      ref={hostRef}
+      onLayout={measure}
+      collapsable={false}
+      style={[{ width: size, height: size, transform: [{ translateY }] }, style]}>
       <Image source={blank} style={{ width: size, height: size }} resizeMode="contain" fadeDuration={0} />
       <View style={StyleSheet.absoluteFill} pointerEvents="none">
-        <Eye size={size} x={EYE.leftX} lid={lid} />
-        <Eye size={size} x={EYE.rightX} lid={lid} />
+        <Eye size={size} x={EYE.leftX} lid={lid} aim={aimL} />
+        <Eye size={size} x={EYE.rightX} lid={lid} aim={aimR} />
         <Smile />
       </View>
     </Animated.View>

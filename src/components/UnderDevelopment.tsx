@@ -9,23 +9,19 @@ import React from "react";
 import { View, Text, Pressable, StyleSheet, useWindowDimensions } from "react-native";
 import Svg, { Path, Rect } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Sky from "./brand/Sky";
-import { CloudBank, StillCloud } from "./brand/Clouds";
+import { StillCloud } from "./brand/Clouds";
 import AnimatedLogo from "./brand/AnimatedLogo";
 import MenoidWordmark from "./brand/MenoidWordmark";
 import CloudChip from "./brand/CloudChip";
 import { COLORS, FONT } from "../theme/tokens";
 
 export default function UnderDevelopment({ onLock }: { onLock: () => void }) {
-  const { width, height } = useWindowDimensions();
+  const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const markSize = Math.min(width * 0.5, 200);
 
   return (
     <View style={styles.fill}>
-      <Sky width={width} height={height} />
-      <CloudBank layer="mid" viewportWidth={width} style={{ position: "absolute", top: 0, left: 0 }} />
-
       <View style={{ position: "absolute", top: insets.top + 14, left: 18, zIndex: 20 }}>
         <CloudChip contentStyle={styles.brandChip} lobeBase={28}>
           <MenoidWordmark height={14} tone="violet" />
@@ -57,8 +53,6 @@ export default function UnderDevelopment({ onLock }: { onLock: () => void }) {
         </View>
         <Text style={styles.sub}>The full private wallet is on its way.</Text>
       </View>
-
-      <CloudBank layer="near" viewportWidth={width} style={{ position: "absolute", bottom: 0, left: 0 }} />
     </View>
   );
 }
