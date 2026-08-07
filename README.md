@@ -23,13 +23,17 @@ blob is persisted (AsyncStorage), same trust model as the extension.
 ```
 src/
   polyfills.ts            Buffer + getRandomValues, imported first
-  theme/                  palette, sky gradients, fonts
+  theme/                  palette, sky gradients, fonts, open/noid tokens
   crypto/                 walletCrypto (PBKDF2 + AES-GCM), keyDerivation (EVM/SOL/SUI/APT)
   lib/                    storage (AsyncStorage), wallets (encrypted store)
-  context/WalletContext   the unlocked session (decrypt / lock)
-  components/brand/       Sky, Clouds, CloudChip, MenoidWordmark, AnimatedLogo (blink)
+  lib/networks|chains|rpc the six chains: config, crests, native balances
+  services/prices         live USD prices (CoinGecko)
+  context/WalletContext   the unlocked session (decrypt / lock) + view mode
+  components/brand/       Backdrop, Sky, Clouds, CloudChip, MenoidWordmark, AnimatedLogo
   components/setup/       SetupUI kit, Welcome, CreateWallet, ImportWallet, LockScreen
-  components/UnderDevelopment.tsx
+  components/WalletHome   navbar (accounts / mode / settings) + body
+  components/modes/       OpenModeView (live), NoidModeView (placeholder)
+  components/shared/      AnimatedNumber, copy chips, treasure card, under-dev panel
 App.tsx                   loading → onboarding → locked → unlocked
 ```
 

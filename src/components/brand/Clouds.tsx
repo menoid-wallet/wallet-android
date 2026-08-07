@@ -6,7 +6,7 @@
  * gradient, so the vertical ramp runs continuously across the whole shape. A
  * solid deck welds the near bank's puffs to the bottom edge.
  */
-import React, { memo, useEffect, useMemo, useRef } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { Animated, Easing, View, StyleSheet, ViewStyle } from "react-native";
 import Svg, { Defs, LinearGradient, Stop, Circle, Rect, G } from "react-native-svg";
 
@@ -44,6 +44,11 @@ const MID_CLOUDS: CloudProps[] = [
   { shape: 2, x: 760, y: 26, scale: 0.52 }, { shape: 0, x: 1000, y: 20, scale: 0.54 },
 ];
 
+/* Two sets of stops for the same silhouettes. "storm" is the same weather over
+   noid mode's dark sky: the day palette on that violet reads as white paper cut
+   out and pasted on, so the storm ramp bottoms out close to the sky it sits in
+   and only the lit crown separates. Lifted from the extension's
+   `ext-cloud-*-storm` gradients. */
 const GRAD = {
   day: {
     near: [
@@ -53,7 +58,17 @@ const GRAD = {
       { o: 0, c: "#FFFFFF", op: 0.85 }, { o: 0.5, c: "#E7D8FB", op: 0.7 }, { o: 1, c: "#CDB4F2", op: 0.55 },
     ],
   },
+  storm: {
+    near: [
+      { o: 0, c: "#8E72CE", op: 1 }, { o: 0.5, c: "#6A4FA8", op: 1 }, { o: 1, c: "#4A3379", op: 1 },
+    ],
+    mid: [
+      { o: 0, c: "#9C80DA", op: 0.7 }, { o: 0.5, c: "#6C51AA", op: 0.6 }, { o: 1, c: "#432E70", op: 0.5 },
+    ],
+  },
 };
+
+export type CloudTone = "day" | "storm";
 
 function Puffs({ clouds, floor, gradId }: { clouds: CloudProps[]; floor: boolean; gradId: string }) {
   return (
@@ -80,19 +95,29 @@ function CloudBankBase({
   bandHeight,
   drift = true,
   style,
+  noid,
+  tone = "day",
 }: {
   layer: "mid" | "near";
   viewportWidth: number;
   bandHeight?: number;
   drift?: boolean;
   style?: ViewStyle;
+  /** Which single tone to draw when `noid` is not supplied. */
+  tone?: CloudTone;
+  /**
+   * 0 = day, 1 = storm. Pass an Animated.Value to cross-fade the bank with the
+   * sky when the mode flips. Both tones then live INSIDE the single drifting
+   * row — one drift loop, so the two silhouettes can never slide out of
+   * register mid-fade, which is what happens if you stack two whole banks.
+   * Omit it entirely (the setup screens do) and only the day tone is built.
+   */
+  noid?: Animated.Value | Animated.AnimatedInterpolation<number>;
 }) {
   const stripW = viewportWidth;
   const h = bandHeight ?? stripW * (220 / 1400);
-  const grad = GRAD.day[layer];
   const clouds = layer === "near" ? NEAR_CLOUDS : MID_CLOUDS;
   const floor = layer === "near";
-  const gradId = layer === "near" ? "cgrad-near" : "cgrad-mid";
 
   const tx = useRef(new Animated.Value(0)).current;
   useEffect(() => {
@@ -110,36 +135,70 @@ function CloudBankBase({
     return () => loop.stop();
   }, [stripW, drift, layer]);
 
-  const Strip = useMemo(() => (
-    <Svg width={stripW} height={h} viewBox="0 0 1400 220">
-      <Defs>
-        <LinearGradient
-          id={gradId}
-          x1="0"
-          y1="30"
-          x2="0"
-          y2={floor ? "170" : "220"}
-          gradientUnits="userSpaceOnUse">
-          {grad.map((s, i) => (
-            <Stop key={i} offset={s.o} stopColor={s.c} stopOpacity={s.op} />
-          ))}
-        </LinearGradient>
-      </Defs>
-      <Puffs clouds={clouds} floor={floor} gradId={gradId} />
-    </Svg>
-  ), [stripW, h, floor, gradId, clouds, grad]);
+  const strip = useCallback(
+    (tone: CloudTone) => {
+      const grad = GRAD[tone][layer];
+      const gradId = `cgrad-${layer}${tone === "storm" ? "-storm" : ""}`;
+      return (
+        <Svg width={stripW} height={h} viewBox="0 0 1400 220">
+          <Defs>
+            <LinearGradient
+              id={gradId}
+              x1="0"
+              y1="30"
+              x2="0"
+              y2={floor ? "170" : "220"}
+              gradientUnits="userSpaceOnUse">
+              {grad.map((s, i) => (
+                <Stop key={i} offset={s.o} stopColor={s.c} stopOpacity={s.op} />
+              ))}
+            </LinearGradient>
+          </Defs>
+          <Puffs clouds={clouds} floor={floor} gradId={gradId} />
+        </Svg>
+      );
+    },
+    [stripW, h, floor, layer, clouds]
+  );
+
+  /* One cell of the loop. With `noid` the two tones are stacked and cross-faded
+     in place; without it there is nothing to fade and the day strip is drawn
+     bare, so the setup screens cost exactly what they did before.
+
+     WHERE THE HARDWARE TEXTURE GOES MATTERS. Bare, it belongs on the drifting
+     row: the whole bank bakes once and the endless drift is a texture translate
+     instead of ~110 vector circles re-composited every frame. Cross-fading, it
+     has to move DOWN onto each tone — a layer whose children change alpha is
+     invalidated and re-rasterised every frame of the fade, whereas alpha on a
+     layer-backed view is a pure GPU op. Same flag, opposite outcome. */
+  const cell = useMemo(() => {
+    if (!noid) return strip(tone);
+    return (
+      <View style={{ width: stripW, height: h }}>
+        <Animated.View
+          renderToHardwareTextureAndroid
+          shouldRasterizeIOS
+          style={[StyleSheet.absoluteFill, { opacity: Animated.subtract(1, noid) }]}>
+          {strip("day")}
+        </Animated.View>
+        <Animated.View
+          renderToHardwareTextureAndroid
+          shouldRasterizeIOS
+          style={[StyleSheet.absoluteFill, { opacity: noid }]}>
+          {strip("storm")}
+        </Animated.View>
+      </View>
+    );
+  }, [noid, tone, strip, stripW, h]);
 
   return (
     <View style={[{ height: h, overflow: "hidden" }, style]} pointerEvents="none">
-      {/* renderToHardwareTextureAndroid: bake the two strips into ONE GPU
-          texture so the endless drift is a cheap texture translate instead of
-          re-compositing ~110 vector circles every frame. */}
       <Animated.View
-        renderToHardwareTextureAndroid
-        shouldRasterizeIOS
+        renderToHardwareTextureAndroid={!noid}
+        shouldRasterizeIOS={!noid}
         style={{ flexDirection: "row", width: stripW * 2, transform: [{ translateX: tx }] }}>
-        {Strip}
-        {Strip}
+        {cell}
+        {cell}
       </Animated.View>
     </View>
   );

@@ -3,14 +3,16 @@
  *
  *   onboarding  → Welcome (intro → choose → create/import)
  *   locked      → LockScreen (enter password to decrypt)
- *   unlocked    → UnderDevelopment
+ *   unlocked    → WalletHome
  *
  * TWO THINGS HAPPEN HERE THAT THE SCREENS RELY ON:
  *
  * 1. THE BACKDROP IS MOUNTED ONCE, here, for the life of the app. The sky and
  *    the drifting cloud banks are not part of any screen, so the drift never
  *    restarts and a screen change costs only the screen's own content. Screens
- *    are transparent and draw no weather of their own.
+ *    are transparent and draw no weather of their own. It now also owns the
+ *    open ↔ noid cross-fade, which is why the whole tree — backdrop included —
+ *    sits inside the WalletProvider: the mode has to reach the sky.
  *
  * 2. NOTHING IS SHOWN UNTIL EVERYTHING IS READY. The native splash stays up
  *    until the fonts, the mark's bitmap and the "is there a wallet?" answer are
@@ -25,6 +27,7 @@ import React, { useEffect, useState } from "react";
 import { View, Image, StyleSheet, InteractionManager } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import * as SplashScreen from "expo-splash-screen";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { useAppFonts } from "./src/theme/fonts";
 import { WalletProvider, useWallet } from "./src/context/WalletContext";
@@ -33,13 +36,22 @@ import { SKY_OPEN } from "./src/theme/tokens";
 import Backdrop from "./src/components/brand/Backdrop";
 import Welcome from "./src/components/setup/Welcome";
 import LockScreen from "./src/components/setup/LockScreen";
-import UnderDevelopment from "./src/components/UnderDevelopment";
+import WalletHome from "./src/components/WalletHome";
 
 const MARK = require("./assets/brand/menoid-logo-blank.png");
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 type AppState = "onboarding" | "locked" | "unlocked";
+
+/* The weather, wired to the wallet. The noid half is only BUILT once a session
+   exists — onboarding and the lock screen can never show it, and a second
+   full-screen gradient before the splash lifts is the exact cost the warm-up
+   below exists to avoid. */
+function ModeBackdrop() {
+  const { mode, isUnlocked } = useWallet();
+  return <Backdrop isNoid={isUnlocked && mode === "noid"} enableNoid={isUnlocked} />;
+}
 
 function AppInner({ initial }: { initial: AppState }) {
   const { lock } = useWallet();
@@ -50,7 +62,7 @@ function AppInner({ initial }: { initial: AppState }) {
       return <Welcome onDone={() => setState("locked")} />;
     case "unlocked":
       return (
-        <UnderDevelopment
+        <WalletHome
           onLock={() => {
             lock();
             setState("locked");
@@ -89,32 +101,37 @@ export default function App() {
   }, [warmed]);
 
   return (
-    <SafeAreaProvider>
-      <StatusBar style="light" />
-      <View style={styles.root}>
-        {/* mounted from the very first render, so it is warm and continuous */}
-        <Backdrop />
+    /* GestureHandlerRootView must be the OUTERMOST view: every pan gesture in
+       the app (the mode swipe, the sheet drags) is handled on the UI thread by
+       gesture-handler, and it can only see touches that enter through here. */
+    <GestureHandlerRootView style={styles.root}>
+      <SafeAreaProvider>
+        <StatusBar style="light" />
+        <WalletProvider>
+          <View style={styles.root}>
+            {/* mounted from the very first render, so it is warm and continuous */}
+            <ModeBackdrop />
 
-        {loaded ? (
-          <View style={StyleSheet.absoluteFill}>
-            <WalletProvider>
-              <AppInner initial={initial} />
-            </WalletProvider>
+            {loaded ? (
+              <View style={StyleSheet.absoluteFill}>
+                <AppInner initial={initial} />
+              </View>
+            ) : (
+              /* Decodes the mark while the splash still covers everything.
+                 Image.prefetch does NOT work on a bundled require()d asset —
+                 onLoad firing is the only proof the bitmap is in memory. */
+              <Image
+                source={MARK}
+                style={styles.preload}
+                fadeDuration={0}
+                onLoad={() => setMarkReady(true)}
+                onError={() => setMarkReady(true)}
+              />
+            )}
           </View>
-        ) : (
-          /* Decodes the mark while the splash still covers everything.
-             Image.prefetch does NOT work on a bundled require()d asset —
-             onLoad firing is the only proof the bitmap is in memory. */
-          <Image
-            source={MARK}
-            style={styles.preload}
-            fadeDuration={0}
-            onLoad={() => setMarkReady(true)}
-            onError={() => setMarkReady(true)}
-          />
-        )}
-      </View>
-    </SafeAreaProvider>
+        </WalletProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 

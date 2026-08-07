@@ -12,10 +12,11 @@
  * Only the smile is still SVG, and it is static and memoised, so it rasterises
  * once and never re-renders.
  */
-import React, { memo, useCallback, useEffect, useRef } from "react";
-import { Animated, Easing, Image, View, StyleSheet, ViewStyle } from "react-native";
+import React, { memo, useCallback, useEffect, useMemo, useRef } from "react";
+import { Animated, Easing, Image, Text, View, StyleSheet, ViewStyle } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import Svg, { Defs, LinearGradient as SvgGradient, Stop, Path } from "react-native-svg";
+import Svg, { Defs, Ellipse, LinearGradient as SvgGradient, Stop, Path } from "react-native-svg";
+import { FONT } from "../../theme/tokens";
 
 const blank = require("../../../assets/brand/menoid-logo-blank.png");
 
@@ -34,6 +35,9 @@ const EYE = {
 const IRIS = ["#4d30af", "#7b5add", "#8260e4", "#7d58df"] as const;
 const IRIS_STOPS = [0, 0.1, 0.3, 0.9] as const;
 
+/** Anything that can drive a numeric transform: a value, a composition of them. */
+type AnimNum = Animated.Value | Animated.AnimatedInterpolation<number> | Animated.AnimatedMultiplication<number>;
+
 const Eye = memo(function Eye({
   size,
   x,
@@ -42,8 +46,10 @@ const Eye = memo(function Eye({
 }: {
   size: number;
   x: number;
-  lid: Animated.Value;
-  aim: Animated.ValueXY;
+  /** eye openness, 0..1 — a value or any composition of them */
+  lid: AnimNum;
+  /** where the eye is looking, in px from its resting socket */
+  aim: { x: AnimNum; y: AnimNum };
 }) {
   const w = size * EYE.w;
   const h = size * EYE.h;
@@ -98,6 +104,88 @@ const Smile = memo(function Smile() {
   );
 });
 
+/** The sleeping mouth — a small snore "o" where the smile normally is. */
+const Snore = memo(function Snore() {
+  return (
+    <Svg viewBox="0 0 1024 1024" style={StyleSheet.absoluteFill} pointerEvents="none">
+      <Defs>
+        <SvgGradient id="al-snore" x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0" stopColor="#704bbd" />
+          <Stop offset="1" stopColor="#956ff1" />
+        </SvgGradient>
+      </Defs>
+      <Ellipse cx={510} cy={548} rx={30} ry={23} fill="url(#al-snore)" />
+      <Ellipse cx={500} cy={540} rx={9} ry={6} fill="#ffffff" opacity={0.4} />
+    </Svg>
+  );
+});
+
+/** Three z's drifting up and to the right of the head while it sleeps. */
+const Zzz = memo(function Zzz({ size }: { size: number }) {
+  const drift = useRef([new Animated.Value(0), new Animated.Value(0), new Animated.Value(0)]).current;
+
+  useEffect(() => {
+    const loops = drift.map((v, i) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(i * 550),
+          Animated.timing(v, { toValue: 1, duration: 1650, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+          Animated.timing(v, { toValue: 0, duration: 0, useNativeDriver: true }),
+        ])
+      )
+    );
+    loops.forEach((l) => l.start());
+    return () => loops.forEach((l) => l.stop());
+  }, [drift]);
+
+  const specs = [
+    { x: 0.674, y: 0.26, fs: 0.068 },
+    { x: 0.73, y: 0.2, fs: 0.051 },
+    { x: 0.773, y: 0.155, fs: 0.037 },
+  ];
+
+  return (
+    <>
+      {specs.map((s, i) => (
+        <Animated.View
+          key={i}
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            left: size * s.x,
+            top: size * s.y,
+            opacity: drift[i].interpolate({ inputRange: [0, 0.2, 0.75, 1], outputRange: [0, 1, 1, 0] }),
+            transform: [
+              { translateY: drift[i].interpolate({ inputRange: [0, 1], outputRange: [0, -size * 0.12] }) },
+              { translateX: drift[i].interpolate({ inputRange: [0, 1], outputRange: [0, size * 0.05] }) },
+            ],
+          }}>
+          <Text
+            style={{
+              fontFamily: FONT.roundBold,
+              fontSize: size * s.fs,
+              color: "#7b5add",
+              includeFontPadding: false,
+            }}>
+            z
+          </Text>
+        </Animated.View>
+      ))}
+    </>
+  );
+});
+
+/**
+ * The mark's face.
+ *
+ *   idle     — neutral: a gentle double-blink, optional gaze tracking
+ *   sleeping — eyes shut, floating, snoring, z's drifting up
+ *   awake    — just woke: eyes pop open with a startle
+ *   waiting  — eyes open, scanning side to side (watching the voyage cloud)
+ *   wink     — the "confirmed!" beat: one eye winks fast, the other holds still
+ */
+export type LogoExpression = "idle" | "sleeping" | "awake" | "waiting" | "wink";
+
 export type GazePoint = { x: number; y: number };
 
 function AnimatedLogoBase({
@@ -106,6 +194,7 @@ function AnimatedLogoBase({
   blink = true,
   float = false,
   gaze = null,
+  expression = "idle",
 }: {
   size?: number;
   style?: ViewStyle;
@@ -113,8 +202,21 @@ function AnimatedLogoBase({
   float?: boolean;
   /** A point in WINDOW coordinates for the eyes to follow. */
   gaze?: GazePoint | null;
+  expression?: LogoExpression;
 }) {
+  const sleeping = expression === "sleeping";
+  const waiting = expression === "waiting";
+  const winking = expression === "wink";
+  const floating = float || sleeping;
+  /* The lid only drops for a BLINK. Sleep is a separate, held-shut value, so
+     the two can cross-fade rather than fight over one animated node — which is
+     what makes waking read as the eyes springing open. */
+  const blinkingNow = blink && (expression === "idle" || expression === "awake");
+
   const lid = useRef(new Animated.Value(1)).current;
+  const shut = useRef(new Animated.Value(sleeping ? 0.07 : 1)).current;
+  const wink = useRef(new Animated.Value(1)).current;
+  const scan = useRef(new Animated.Value(0)).current;
   const bob = useRef(new Animated.Value(0)).current;
   const aimL = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
   const aimR = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
@@ -157,7 +259,10 @@ function AnimatedLogoBase({
   }, [gaze?.x, gaze?.y, size, aimL, aimR]);
 
   useEffect(() => {
-    if (!blink) return;
+    if (!blinkingNow) {
+      lid.setValue(1);
+      return;
+    }
     // The website's double-blink, entirely on the UI thread.
     const t = (to: number, ms: number) =>
       Animated.timing(lid, {
@@ -171,10 +276,57 @@ function AnimatedLogoBase({
     );
     loop.start();
     return () => loop.stop();
-  }, [blink, lid]);
+  }, [blinkingNow, lid]);
+
+  /* Sleep is a spring rather than a cut, so dozing off lowers the lids and
+     waking pops them open with a little overshoot. */
+  useEffect(() => {
+    Animated.spring(shut, {
+      toValue: sleeping ? 0.07 : 1,
+      speed: 11,
+      bounciness: sleeping ? 0 : 14,
+      useNativeDriver: true,
+    }).start();
+  }, [sleeping, shut]);
+
+  /* The wink: one fast shut-and-open on the viewer's-left eye only. Its partner
+     holds perfectly still, which is what separates a wink from a blink. */
+  useEffect(() => {
+    if (!winking) {
+      wink.setValue(1);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(wink, { toValue: 0.06, duration: 110, easing: Easing.in(Easing.quad), useNativeDriver: true }),
+        Animated.timing(wink, { toValue: 1, duration: 150, easing: Easing.out(Easing.back(2)), useNativeDriver: true }),
+        Animated.delay(1500),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [winking, wink]);
+
+  /* Watching the voyage cloud: the eyes sweep side to side on the SAME 2.4s
+     period as CloudVoyage's drift, so the mark reads as tracking it. */
+  useEffect(() => {
+    if (!waiting) {
+      scan.setValue(0);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(scan, { toValue: 1, duration: 1200, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+        Animated.timing(scan, { toValue: -1, duration: 1200, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+      ])
+    );
+    scan.setValue(-1);
+    loop.start();
+    return () => loop.stop();
+  }, [waiting, scan]);
 
   useEffect(() => {
-    if (!float) return;
+    if (!floating) return;
     const loop = Animated.loop(
       Animated.sequence([
         Animated.timing(bob, { toValue: 1, duration: 1900, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
@@ -183,9 +335,33 @@ function AnimatedLogoBase({
     );
     loop.start();
     return () => loop.stop();
-  }, [float, bob]);
+  }, [floating, bob]);
 
   const translateY = bob.interpolate({ inputRange: [0, 1], outputRange: [0, -size * 0.05] });
+
+  // Blink × sleep multiply into one openness, so a blink still reads while the
+  // lids are on their way down and neither animation has to know about the other.
+  const openness = Animated.multiply(lid, shut);
+  const leftOpen = winking ? Animated.multiply(wink, shut) : openness;
+  const rightOpen = winking ? shut : openness;
+
+  /* While waiting, BOTH eyes share one sweep instead of aiming individually —
+     they are following the same cloud, so they must not converge. Built once
+     per size, never per render: a fresh Animated node every render is a fresh
+     native node every render. */
+  const scanAim = useMemo(
+    () => ({
+      x: scan.interpolate({
+        inputRange: [-1, 1],
+        outputRange: [-size * (34 / 1024), size * (34 / 1024)],
+      }),
+      y: new Animated.Value(size * (16 / 1024)),
+    }),
+    [scan, size]
+  );
+
+  const aimLeft = waiting ? scanAim : aimL;
+  const aimRight = waiting ? scanAim : aimR;
 
   return (
     <Animated.View
@@ -195,10 +371,11 @@ function AnimatedLogoBase({
       style={[{ width: size, height: size, transform: [{ translateY }] }, style]}>
       <Image source={blank} style={{ width: size, height: size }} resizeMode="contain" fadeDuration={0} />
       <View style={StyleSheet.absoluteFill} pointerEvents="none">
-        <Eye size={size} x={EYE.leftX} lid={lid} aim={aimL} />
-        <Eye size={size} x={EYE.rightX} lid={lid} aim={aimR} />
-        <Smile />
+        <Eye size={size} x={EYE.leftX} lid={leftOpen} aim={aimLeft} />
+        <Eye size={size} x={EYE.rightX} lid={rightOpen} aim={aimRight} />
+        {sleeping ? <Snore /> : <Smile />}
       </View>
+      {sleeping && <Zzz size={size} />}
     </Animated.View>
   );
 }
