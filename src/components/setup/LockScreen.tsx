@@ -14,6 +14,7 @@
  */
 import React, { useCallback, useRef, useState } from "react";
 import {
+  InteractionManager,
   View,
   Text,
   Pressable,
@@ -23,6 +24,7 @@ import {
   useWindowDimensions,
   ActivityIndicator,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
 } from "react-native";
 import Svg, { Path, Circle, Line } from "react-native-svg";
@@ -34,7 +36,15 @@ import PasswordField from "../shared/PasswordField";
 import { useWallet } from "../../context/WalletContext";
 import { COLORS, FONT } from "../../theme/tokens";
 
-export default function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
+export default function LockScreen({
+  onDecrypted,
+  onExited,
+}: {
+  /** Fires the moment the password checks out — App mounts the wallet UNDER us. */
+  onDecrypted: () => void;
+  /** Fires when the exit has finished — App can drop us now. */
+  onExited: () => void;
+}) {
   const { height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const { unlock } = useWallet();
@@ -73,15 +83,32 @@ export default function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
       runShake();
       return;
     }
-    // Correct: play the hand-off, THEN swap screens.
+    /* Correct. Hand over FIRST — the wallet mounts behind us while this screen
+       still stands there saying "Unlocking…" — and only leave once that work is
+       done. Playing the exit first and swapping after meant the animation ended
+       into a second of empty lock screen while the wallet built itself.
+
+       The keyboard goes before anything else and gets a beat to retract, or the
+       window is still resizing while the mark climbs: a layout pass per frame,
+       on the one animation that has to be the smoothest in the app. */
     setGaze(null);
-    Animated.timing(exit, {
-      toValue: 1,
-      duration: 620,
-      easing: Easing.bezier(0.4, 0, 0.2, 1),
-      useNativeDriver: true,
-    }).start(({ finished }) => finished && onUnlocked());
-  }, [loading, password, unlock, exit, onUnlocked]);
+    Keyboard.dismiss();
+    onDecrypted();
+    setTimeout(() => {
+      InteractionManager.runAfterInteractions(() => {
+        Animated.timing(exit, {
+          toValue: 1,
+          duration: 560,
+          easing: Easing.bezier(0.32, 0, 0.1, 1),
+          useNativeDriver: true,
+        }).start(({ finished }) => finished && onExited());
+      });
+    }, 90);
+  }, [loading, password, unlock, exit, onDecrypted, onExited]);
+
+  /* The mark stops floating for the exit. Two transforms fighting over the same
+     view is what made the climb look like it was being tugged. */
+  const leaving = loading;
 
   /* form sinks, mark climbs out of frame */
   const formShift = exit.interpolate({ inputRange: [0, 1], outputRange: [0, 150] });
@@ -104,14 +131,18 @@ export default function LockScreen({ onUnlocked }: { onUnlocked: () => void }) {
         behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <View style={[styles.center, { paddingBottom: insets.bottom + 110 }]}>
           <Animated.View
+            renderToHardwareTextureAndroid
+            shouldRasterizeIOS
             style={{
               opacity: markFade,
               transform: [{ translateY: markShift }, { scale: markScale }],
             }}>
-            <AnimatedLogo size={150} float blink gaze={gaze} style={{ marginBottom: 36 }} />
+            <AnimatedLogo size={150} float={!leaving} blink gaze={gaze} style={{ marginBottom: 36 }} />
           </Animated.View>
 
           <Animated.View
+            renderToHardwareTextureAndroid
+            shouldRasterizeIOS
             style={{
               width: "100%",
               alignItems: "center",

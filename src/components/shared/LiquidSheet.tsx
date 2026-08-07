@@ -2,29 +2,37 @@
  * LiquidSheet.tsx — the bottom sheet every action modal in the wallet sits in.
  *
  * Ported from the extension's shared/LiquidSheet.tsx, with its fullscreen mode
- * deliberately dropped: on a phone a sheet that snaps to fullscreen is just a
- * screen, and the brief here is a sheet that comes up from the bottom and is
- * only as tall as its content (capped at 90% so it can never swallow the app).
+ * reworked: on a phone a sheet either hugs its content or occupies a fixed
+ * fraction of the screen, and the send flow needs to move between those two
+ * without a jump.
  *
- * WHY THE DRAG IS A GESTURE-HANDLER PAN AND NOT A PanResponder:
- * PanResponder delivers every touch move to JS, so a drag competes with
- * whatever else React is doing — on the send form, that is a live-validating
- * input. `PanGestureHandler` feeds `Animated.event(..., {useNativeDriver:true})`
- * from the native side instead, so the sheet tracks the finger on the UI thread
- * and JS only hears about the release. That is the whole difference between a
- * sheet that sticks to your thumb and one that lags behind it.
+ * HOW `snap` WORKS, AND WHY IT IS NOT AN ANIMATED HEIGHT.
+ * Animating a height re-lays-out every child on every frame — with a keypad
+ * inside, that is the whole sheet re-measured sixty times a second, and it
+ * cannot use the native driver at all. So a snapped sheet is ALWAYS a
+ * full-window-tall surface that is pushed DOWN by whatever fraction should stay
+ * off-screen. `snap: 0.75` means "three quarters visible", i.e. shifted down by
+ * a quarter of the window. Growing to full screen is then one native
+ * translateY, and each stage simply lays its content out in the region that
+ * happens to be visible.
  *
- * The sheet is measured, not guessed: `onLayout` reports its real height and
- * the entrance interpolates from exactly that far down, so a short sheet does
- * not fly in from the bottom of the screen and a tall one does not start
- * halfway up.
+ * THE KEYBOARD IS HANDLED DIFFERENTLY IN THE TWO MODES. A content-sized sheet
+ * is lifted bodily, which is all it needs. A SNAPPED sheet is not: its top edge
+ * is a deliberate position on the screen, and sliding it up drags the header
+ * off the top while the surface's unused lower half spills into the gap. So a
+ * snapped sheet stays put and its content shortens instead — see
+ * lib/useKeyboardHeight, which is what the panes inside it read.
+ *
+ * The drag is a gesture-handler pan feeding `Animated.event` on the grab area
+ * only; dragging anywhere else would fight the form's inputs and the content
+ * scroll.
  */
 
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
   Easing,
-  KeyboardAvoidingView,
+  Keyboard,
   Modal,
   Platform,
   Pressable,
@@ -57,7 +65,6 @@ const SURFACE = {
     closeBg: "rgba(78,47,142,0.06)",
     closeLine: "rgba(78,47,142,0.14)",
     closeInk: "rgba(78,47,142,0.7)",
-    tail: "#DCCDF7",
   },
   ink: {
     colors: ["#2B1A55", "#221244", "#1A1030"] as const,
@@ -66,7 +73,6 @@ const SURFACE = {
     closeBg: "rgba(244,238,255,0.08)",
     closeLine: "rgba(244,238,255,0.16)",
     closeInk: "rgba(244,238,255,0.75)",
-    tail: "#1A1030",
   },
 };
 
@@ -75,6 +81,9 @@ export default memo(function LiquidSheet({
   onClose,
   tone = "cream",
   disableDrag = false,
+  hideClose = false,
+  snap,
+  scroll = true,
   children,
 }: {
   open: boolean;
@@ -82,11 +91,24 @@ export default memo(function LiquidSheet({
   tone?: SheetTone;
   /** Kills every dismissal path — used while a transaction is in flight. */
   disableDrag?: boolean;
+  /**
+   * Suppress the sheet's own close button. A full-screen stage puts it in the
+   * status bar, so those stages draw their own somewhere sensible.
+   */
+  hideClose?: boolean;
+  /**
+   * Fraction of the window the sheet occupies, 0..1. Omit for a sheet that is
+   * exactly as tall as its content. Changing it animates.
+   */
+  snap?: number;
+  /** Put the content in a ScrollView. Off for stages that manage their own. */
+  scroll?: boolean;
   children: React.ReactNode;
 }) {
   const { height: winH } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const s = SURFACE[tone];
+  const snapped = typeof snap === "number";
 
   const [mounted, setMounted] = useState(open);
   /* Seeded to the full window height so the very first frame is off-screen even
@@ -96,6 +118,8 @@ export default memo(function LiquidSheet({
 
   const slide = useRef(new Animated.Value(0)).current; // 0 = away, 1 = seated
   const dragRaw = useRef(new Animated.Value(0)).current;
+  const snapY = useRef(new Animated.Value(snapped ? (1 - snap!) * winH : 0)).current;
+  const kbY = useRef(new Animated.Value(0)).current;
 
   /* Rubber band: downward drags track the finger 1:1 (you are dismissing it),
      upward ones are damped to about a third (there is nowhere to go). Done as
@@ -108,6 +132,45 @@ export default memo(function LiquidSheet({
       }),
     [dragRaw]
   );
+
+  useEffect(() => {
+    if (!snapped) return;
+    Animated.spring(snapY, {
+      toValue: (1 - snap!) * winH,
+      speed: 13,
+      bounciness: 3,
+      useNativeDriver: true,
+    }).start();
+  }, [snap, snapped, winH, snapY]);
+
+  useEffect(() => {
+    const show = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow",
+      (e) => {
+        Animated.timing(kbY, {
+          toValue: e.endCoordinates.height,
+          duration: Platform.OS === "ios" ? e.duration || 240 : 180,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }).start();
+      }
+    );
+    const hide = Keyboard.addListener(
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide",
+      () => {
+        Animated.timing(kbY, {
+          toValue: 0,
+          duration: 200,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }).start();
+      }
+    );
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, [kbY]);
 
   useEffect(() => {
     if (open) {
@@ -133,10 +196,6 @@ export default memo(function LiquidSheet({
     }
   }, [open, mounted, slide, dragRaw]);
 
-  /* The pan lives on the grab area only — dragging anywhere else would fight
-     the form's inputs and the content scroll. `Animated.event` feeds the value
-     from the native side, so the sheet tracks the thumb without waking JS; the
-     only hop is the release decision below. */
   const onGesture = useMemo(
     () => Animated.event([{ nativeEvent: { translationY: dragRaw } }], { useNativeDriver: true }),
     [dragRaw]
@@ -162,9 +221,24 @@ export default memo(function LiquidSheet({
 
   if (!mounted) return null;
 
-  const translateY = Animated.add(
-    slide.interpolate({ inputRange: [0, 1], outputRange: [sheetH, 0] }),
-    drag
+  const travel = snapped ? winH : sheetH;
+  const slideY = Animated.add(
+    slide.interpolate({ inputRange: [0, 1], outputRange: [travel, 0] }),
+    snapY
+  );
+  const translateY = Animated.add(snapped ? slideY : Animated.subtract(slideY, kbY), drag);
+
+  const body = scroll ? (
+    <ScrollView
+      style={snapped ? styles.bodyFill : styles.bodyHug}
+      contentContainerStyle={{ paddingBottom: insets.bottom + 8 }}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
+      bounces={false}>
+      {children}
+    </ScrollView>
+  ) : (
+    <View style={snapped ? styles.bodyFill : undefined}>{children}</View>
   );
 
   return (
@@ -190,22 +264,17 @@ export default memo(function LiquidSheet({
           />
         </Animated.View>
 
-        <KeyboardAvoidingView
-          style={styles.dock}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          pointerEvents="box-none">
+        <View style={styles.dock} pointerEvents="box-none">
           <Animated.View
             onLayout={(e) => {
+              if (snapped) return;
               const h = e.nativeEvent.layout.height;
               if (h > 0 && Math.abs(h - sheetH) > 1) setSheetH(h);
             }}
             style={[
               styles.sheet,
-              {
-                maxHeight: winH * 0.9,
-                borderColor: s.border,
-                transform: [{ translateY }],
-              },
+              snapped ? { height: winH } : { maxHeight: winH * 0.9 },
+              { borderColor: s.border, transform: [{ translateY }] },
             ]}>
             <LinearGradient
               colors={s.colors as unknown as readonly [string, string, ...string[]]}
@@ -224,7 +293,7 @@ export default memo(function LiquidSheet({
               </View>
             </PanGestureHandler>
 
-            {!disableDrag && (
+            {!disableDrag && !hideClose && (
               <Pressable onPress={onClose} hitSlop={10} style={styles.closeBay}>
                 <View style={[styles.close, { backgroundColor: s.closeBg, borderColor: s.closeLine }]}>
                   <Svg width={12} height={12} viewBox="0 0 12 12">
@@ -240,16 +309,9 @@ export default memo(function LiquidSheet({
               </Pressable>
             )}
 
-            <ScrollView
-              style={styles.body}
-              contentContainerStyle={{ paddingBottom: insets.bottom + 8 }}
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-              bounces={false}>
-              {children}
-            </ScrollView>
+            {body}
           </Animated.View>
-        </KeyboardAvoidingView>
+        </View>
       </GestureHandlerRootView>
     </Modal>
   );
@@ -289,5 +351,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  body: { flexGrow: 0 },
+  bodyHug: { flexGrow: 0 },
+  bodyFill: { flex: 1 },
 });

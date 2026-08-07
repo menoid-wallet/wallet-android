@@ -53,25 +53,58 @@ function ModeBackdrop() {
   return <Backdrop isNoid={isUnlocked && mode === "noid"} enableNoid={isUnlocked} />;
 }
 
+/**
+ * THE UNLOCK HAND-OVER IS AN OVERLAP, NOT A SWAP.
+ *
+ * WalletHome is an expensive mount — six token bars, the treasure card and all
+ * of its weather. Playing the lock screen's exit and only THEN swapping meant
+ * the animation finished, and the user then sat looking at an empty lock screen
+ * for about a second while that mount blocked the JS thread.
+ *
+ * So the wallet is mounted the instant the password checks out, UNDER the lock
+ * screen, which is still standing there showing "Unlocking…". Both sides then
+ * wait on the same InteractionManager queue, so the lock screen's exit and the
+ * wallet's arrival begin on the same beat and cross over each other. Nothing
+ * is ever on screen with nothing happening.
+ */
 function AppInner({ initial }: { initial: AppState }) {
   const { lock } = useWallet();
   const [state, setState] = useState<AppState>(initial);
+  const [lockMounted, setLockMounted] = useState(initial === "locked");
 
-  switch (state) {
-    case "onboarding":
-      return <Welcome onDone={() => setState("locked")} />;
-    case "unlocked":
-      return (
+  if (state === "onboarding") {
+    return (
+      <Welcome
+        onDone={() => {
+          setState("locked");
+          setLockMounted(true);
+        }}
+      />
+    );
+  }
+
+  return (
+    <View style={StyleSheet.absoluteFill}>
+      {state === "unlocked" && (
         <WalletHome
           onLock={() => {
             lock();
             setState("locked");
+            setLockMounted(true);
           }}
         />
-      );
-    default:
-      return <LockScreen onUnlocked={() => setState("unlocked")} />;
-  }
+      )}
+
+      {lockMounted && (
+        <View style={StyleSheet.absoluteFill}>
+          <LockScreen
+            onDecrypted={() => setState("unlocked")}
+            onExited={() => setLockMounted(false)}
+          />
+        </View>
+      )}
+    </View>
+  );
 }
 
 export default function App() {

@@ -76,6 +76,31 @@ export function loadOpenTxns(address: string): OpenTxEntry[] {
   return cache[openKey(address)] ?? [];
 }
 
+export interface RecentRecipient {
+  address: string;
+  lastAt: number;
+}
+
+/**
+ * Distinct addresses this sender has paid, most recent first.
+ *
+ * Keyed by the SENDER, which is what makes the send sheet's "Recent" list show
+ * the right people without any per-chain bookkeeping: the three EVM networks
+ * share one address, so they share their history, while Solana, Sui and Aptos
+ * each have their own and are separated for free.
+ */
+export function recentRecipients(address: string, limit = 8): RecentRecipient[] {
+  const seen = new Map<string, number>();
+  for (const e of loadOpenTxns(address)) {
+    if (!e.to) continue;
+    const key = e.to;
+    if (!seen.has(key)) seen.set(key, e.timestamp);
+  }
+  return Array.from(seen, ([addr, lastAt]) => ({ address: addr, lastAt }))
+    .sort((a, b) => b.lastAt - a.lastAt)
+    .slice(0, limit);
+}
+
 export function saveOpenTx(address: string, tx: OpenTxEntry): void {
   const key = openKey(address);
   cache[key] = [tx, ...(cache[key] ?? [])].slice(0, MAX);

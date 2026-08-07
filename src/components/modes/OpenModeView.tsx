@@ -205,41 +205,74 @@ export default function OpenModeView({ activeCoin, setActiveCoin, scrollToTop }:
   const [reverseT, setReverseT] = useState<ReturnType<typeof flipTransform>>(null);
   const consumedReverse = useRef<Rect | null>(null);
 
+  /* DERIVED DURING RENDER, NOT SET IN AN EFFECT. Effects run after the frame is
+     painted, so hiding the shell from one meant the card was drawn at rest for
+     a frame, vanished, and only then flew in — the "it's there, then it isn't,
+     then it arrives" flicker. A rect is waiting and no transform exists yet is
+     something this render already knows. */
+  const shellHidden = reverseMorph != null && reverseT == null;
+
+  /* The card's CONTENT does not morph — scaling type would smear it — so it
+     cross-fades instead: out before we leave, back in a beat behind the card on
+     the way home, so it looks like it is riding the card rather than being
+     switched off and on underneath it. */
+  const contentFade = useRef(new Animated.Value(1)).current;
+
   useEffect(() => {
     if (activeCoin || !reverseMorph || consumedReverse.current === reverseMorph) return;
     consumedReverse.current = reverseMorph;
     let cancelled = false;
-    const id = requestAnimationFrame(() => {
-      void (async () => {
-        const to = await measureRect(treasureRef.current);
-        if (cancelled || !to) {
-          setReverseMorph(null);
-          return;
-        }
-        const tr = flipTransform(reverse, reverseMorph, to);
-        if (!tr) return;
-        reverse.setValue(0);
-        setReverseT(tr);
-        Animated.timing(reverse, {
-          toValue: 1,
-          duration: FLIP_CARD_MS,
-          easing: FLIP_CARD_EASING,
-          useNativeDriver: true,
-        }).start(() => {
-          if (cancelled) return;
-          setReverseT(null);
-          setReverseMorph(null);
-        });
-      })();
-    });
+
+    void (async () => {
+      const to = await measureRect(treasureRef.current);
+      const tr = to ? flipTransform(reverse, reverseMorph, to) : null;
+      if (cancelled) return;
+      if (!tr) {
+        // Nothing to fly from — show the card rather than stranding it hidden.
+        setReverseMorph(null);
+        return;
+      }
+      reverse.setValue(0);
+      setReverseT(tr);
+      Animated.timing(reverse, {
+        toValue: 1,
+        duration: FLIP_CARD_MS,
+        easing: FLIP_CARD_EASING,
+        useNativeDriver: true,
+      }).start(() => {
+        if (cancelled) return;
+        setReverseT(null);
+        setReverseMorph(null);
+      });
+    })();
+
     return () => {
       cancelled = true;
-      cancelAnimationFrame(id);
     };
   }, [activeCoin, reverseMorph, reverse]);
 
-  /* Capture where things ARE, then navigate. Measured before the scroll is
-     reset, because after that the bar is no longer where the user tapped it. */
+  /* Bring the dashboard's content back whenever we land on it, morph or no
+     morph — Android's Back returns without a rect, and the content must not be
+     left faded out in that case. It trails the card by a beat when there IS a
+     card flying home. */
+  useEffect(() => {
+    if (activeCoin) return;
+    const a = Animated.timing(contentFade, {
+      toValue: 1,
+      duration: 360,
+      delay: reverseMorph ? 170 : 0,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    });
+    a.start();
+    return () => a.stop();
+    // Only on arrival; reverseMorph is read once, as it stands at that moment.
+  }, [activeCoin, contentFade]);
+
+  /* Leaving: measure where things ARE, fade the content off the card, and only
+     then navigate. Cutting straight to the coin page left the card's contents
+     blinking out of existence while an empty shell resized — the "stutter". The
+     shell itself stays put through the fade, so the object never disappears. */
   const openCoin = useCallback(
     async (id: NetworkId) => {
       const [card, icon] = await Promise.all([
@@ -247,10 +280,17 @@ export default function OpenModeView({ activeCoin, setActiveCoin, scrollToTop }:
         measureRect(barRefs.current[id] ?? null),
       ]);
       setMorph({ card, icon });
-      setActiveCoin(id);
-      scrollToTop();
+      Animated.timing(contentFade, {
+        toValue: 0,
+        duration: 170,
+        easing: Easing.in(Easing.quad),
+        useNativeDriver: true,
+      }).start(() => {
+        setActiveCoin(id);
+        scrollToTop();
+      });
     },
-    [setActiveCoin, scrollToTop]
+    [setActiveCoin, scrollToTop, contentFade]
   );
 
   const totalUsd = useMemo(() => {
@@ -301,10 +341,12 @@ export default function OpenModeView({ activeCoin, setActiveCoin, scrollToTop }:
         <SendModal
           open={showSend}
           onClose={() => setShowSend(false)}
+          chain={activeChain}
           network={activeCoin}
           fromAddress={account?.address ?? ""}
           privateKey={account?.privateKey ?? ""}
           balance={bal}
+          usdPrice={prices?.[activeCoin]?.usd ?? 0}
           onSent={() => void fetchAllBalances()}
         />
         <ReceiveModal
@@ -360,6 +402,7 @@ export default function OpenModeView({ activeCoin, setActiveCoin, scrollToTop }:
             collapsable={false}
             style={[
               styles.shellBay,
+              shellHidden && styles.preMorph,
               reverseT
                 ? {
                     transform: [
@@ -374,7 +417,7 @@ export default function OpenModeView({ activeCoin, setActiveCoin, scrollToTop }:
             <TreasureCardShell isNoid={false} treasureChain={treasureChain} />
           </Animated.View>
 
-          <View style={styles.cardContent}>
+          <Animated.View style={[styles.cardContent, { opacity: contentFade }]}>
             <Text style={styles.treasureLabel}>TREASURE</Text>
 
             {featuredChain ? (
@@ -405,10 +448,13 @@ export default function OpenModeView({ activeCoin, setActiveCoin, scrollToTop }:
             )}
 
             <CopyKeysButton addresses={addresses} isNoid={false} />
-          </View>
+          </Animated.View>
         </View>
       </Animated.View>
 
+      {/* The list goes with the card's content — the whole page clears, leaving
+          only the card and the sky, and then the card leaves too. */}
+      <Animated.View style={{ opacity: contentFade }}>
       {/* Tokens header */}
       <View style={styles.tokensHeader}>
         <Text style={styles.tokensLabel}>TOKENS</Text>
@@ -437,6 +483,7 @@ export default function OpenModeView({ activeCoin, setActiveCoin, scrollToTop }:
       </View>
 
       <View style={styles.tail} />
+      </Animated.View>
     </View>
   );
 }
@@ -569,14 +616,19 @@ function BuyIcon() {
 
 const styles = StyleSheet.create({
   /* ── treasure card ── */
-  shellBay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 },
-  cardBay: { paddingHorizontal: 16, paddingTop: 20 },
-  card: {
+  /* The card's SOLID BODY lives here, on the view that the reverse morph
+     transforms — not on the static parent. Android derives an elevation shadow
+     from a view's outline, which it only has when the view has a background, so
+     that background used to sit on the parent... where it stayed put while the
+     shell flew home, leaving a black card already in place with a second one
+     sailing towards it. It travels with the shell now. */
+  shellBay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     borderRadius: CARD_RADIUS,
-    /* Android derives an elevation shadow from the view's OUTLINE, which it
-       only has when the view has a background. Without this the card casts no
-       shadow at all on Android — the gradient lives in a child, which does not
-       count. It is never visible: the shell covers it completely. */
     backgroundColor: "#2B1A55",
     elevation: 14,
     shadowColor: "#1E0E46",
@@ -584,6 +636,10 @@ const styles = StyleSheet.create({
     shadowRadius: 26,
     shadowOffset: { width: 0, height: 16 },
   },
+  /** Held back until the reverse-morph transform exists. */
+  preMorph: { opacity: 0 },
+  cardBay: { paddingHorizontal: 16, paddingTop: 20 },
+  card: { borderRadius: CARD_RADIUS },
   cardContent: { paddingHorizontal: 24, paddingVertical: 36 },
   treasureLabel: {
     fontFamily: FONT.roundBold,

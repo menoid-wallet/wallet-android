@@ -182,8 +182,12 @@ const LogRow = memo(function LogRow({
           style={[
             styles.row,
             {
-              backgroundColor: isNoid ? "rgba(255,255,255,0.09)" : "rgba(255,255,255,0.50)",
-              borderColor: isNoid ? "rgba(255,255,255,0.16)" : "rgba(255,255,255,0.62)",
+              /* Opaque enough to sit ON the sky's cloud floor. At 50% the
+                 clouds read straight through the row, so the label and the
+                 amount looked like they were floating on the weather while
+                 their card was somewhere underneath it. */
+              backgroundColor: isNoid ? "rgba(43,26,85,0.82)" : "rgba(255,255,255,0.86)",
+              borderColor: isNoid ? "rgba(255,255,255,0.16)" : "rgba(255,255,255,0.9)",
               transform: [{ scale: pressed ? 0.975 : 1 }],
             },
           ]}>

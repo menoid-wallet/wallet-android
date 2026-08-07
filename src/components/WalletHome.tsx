@@ -26,6 +26,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Animated,
   Easing,
+  InteractionManager,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -133,8 +134,41 @@ export default function WalletHome({ onLock }: { onLock: () => void }) {
     }, [accountsOpen, activeCoin, settingsOpen])
   );
 
+  /* ── Arrival ──
+     The lock screen hands over by climbing its mark UP out of frame, so the
+     wallet rises in from below to finish the same movement. Without this the
+     home simply blinked into existence at the end of a careful animation, which
+     made the lock screen look like it had been cut off mid-sentence. Opacity
+     and transform only, so it is one native pass over the whole surface. */
+  const arrive = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    /* Deferred to after the interactions queue drains, which is also what the
+       lock screen waits on before it starts leaving — so the two animations
+       begin on the same beat and cross over rather than queueing up behind this
+       screen's (heavy) mount. */
+    const task = InteractionManager.runAfterInteractions(() => {
+      Animated.timing(arrive, {
+        toValue: 1,
+        duration: 560,
+        easing: Easing.bezier(0.16, 1, 0.3, 1),
+        useNativeDriver: true,
+      }).start();
+    });
+    return () => task.cancel();
+  }, [arrive]);
+
   return (
-    <View style={styles.root}>
+    <Animated.View
+      style={[
+        styles.root,
+        {
+          opacity: arrive.interpolate({ inputRange: [0, 0.45], outputRange: [0, 1], extrapolate: "clamp" }),
+          transform: [
+            { translateY: arrive.interpolate({ inputRange: [0, 1], outputRange: [38, 0] }) },
+            { scale: arrive.interpolate({ inputRange: [0, 1], outputRange: [0.972, 1] }) },
+          ],
+        },
+      ]}>
       {/* ─── Header ─── */}
       <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
         <Animated.View style={[StyleSheet.absoluteFill, { opacity: Animated.subtract(1, mixN) }]}>
@@ -262,7 +296,7 @@ export default function WalletHome({ onLock }: { onLock: () => void }) {
         isNoid={isNoid}
         activeName={activeEntry?.name ?? ""}
       />
-    </View>
+    </Animated.View>
   );
 }
 

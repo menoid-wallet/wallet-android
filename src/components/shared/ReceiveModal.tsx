@@ -11,15 +11,15 @@
  */
 
 import React, { memo, useEffect, useRef, useState } from "react";
-import { Image, Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import QRCode from "react-native-qrcode-svg";
 import Svg, { Path } from "react-native-svg";
 import * as Clipboard from "expo-clipboard";
+import AnimatedLogo from "../brand/AnimatedLogo";
 import LiquidSheet from "./LiquidSheet";
 import { COLORS, FONT } from "../../theme/tokens";
 import { rgba, themeTokens } from "../../theme/useThemeTokens";
 
-const HAT = require("../../../assets/brand/meno_hat_icon.png");
 const QR_SIZE = 210;
 
 export default memo(function ReceiveModal({
@@ -65,7 +65,7 @@ export default memo(function ReceiveModal({
           </Text>
         </View>
 
-        {/* QR + the mark's hat over the middle */}
+        {/* QR with the mark over the middle */}
         <View style={styles.qrBay}>
           <View
             style={[
@@ -87,9 +87,11 @@ export default memo(function ReceiveModal({
                 <Text style={{ color: rgba(t.inkRgb, 0.4), fontSize: 11 }}>No data</Text>
               </View>
             )}
-            <View style={styles.hatBay} pointerEvents="none">
-              <View style={styles.hatDisc} />
-              <Image source={HAT} style={styles.hat} resizeMode="contain" fadeDuration={0} />
+            {/* The mark sits on its own disc in the middle. The QR is generated
+                at error-correction level H precisely so it can. */}
+            <View style={styles.markBay} pointerEvents="none">
+              <View style={styles.markDisc} />
+              <AnimatedLogo size={46} blink />
             </View>
           </View>
         </View>
@@ -166,7 +168,7 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 10 },
   },
   qrEmpty: { width: QR_SIZE, height: QR_SIZE, alignItems: "center", justifyContent: "center" },
-  hatBay: {
+  markBay: {
     position: "absolute",
     top: 0,
     left: 0,
@@ -175,16 +177,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  hatDisc: {
+  /* A rounded SQUARE, not a disc — it reads as one of the QR's own modules
+     rather than a sticker dropped on top of it. */
+  markDisc: {
     position: "absolute",
-    height: 48,
-    width: 48,
-    borderRadius: 24,
+    height: 62,
+    width: 62,
+    borderRadius: 16,
     backgroundColor: "#F0E9FE",
     borderWidth: 1,
     borderColor: "rgba(78,47,142,0.12)",
   },
-  hat: { height: 40, width: 40 },
 
   addrCard: { marginTop: 18, padding: 12, borderRadius: 14, borderWidth: 1 },
   addrLabel: { fontFamily: FONT.body, fontSize: 9, letterSpacing: 2.6, marginBottom: 5 },

@@ -197,53 +197,69 @@ export default function CoinDetailView({
   const [cardT, setCardT] = useState<ReturnType<typeof flipTransform>>(null);
   const [iconT, setIconT] = useState<ReturnType<typeof flipTransform>>(null);
 
-  useEffect(() => {
-    if (!morph?.card && !morph?.icon) return;
-    let cancelled = false;
-    // One frame of grace: the page has to be laid out before "where it now is"
-    // means anything.
-    const id = requestAnimationFrame(() => {
-      void (async () => {
-        const [cardTo, iconTo] = await Promise.all([
-          measureRect(shellRef.current),
-          measureRect(iconRef.current),
-        ]);
-        if (cancelled) return;
+  /* THE MORPHING ELEMENTS START INVISIBLE. Measuring "where it now is" needs a
+     layout pass, so the transform cannot exist on the first frame — and for that
+     one frame the graph card would paint at its FINAL size and place, before
+     snapping back to the treasure card to fly in. That read as two cards: one
+     already arrived, one still travelling. They are revealed in the same commit
+     that applies the transform, so the first thing you ever see is the card
+     sitting exactly on top of the one you tapped. */
+  const [cardHidden, setCardHidden] = useState(!!morph?.card);
+  const [iconHidden, setIconHidden] = useState(!!morph?.icon);
 
-        if (morph.card && cardTo) {
-          const tr = flipTransform(flip, morph.card, cardTo);
-          if (tr) {
-            flip.setValue(0);
-            setCardT(tr);
-            Animated.timing(flip, {
-              toValue: 1,
-              duration: FLIP_CARD_MS,
-              easing: FLIP_CARD_EASING,
-              useNativeDriver: true,
-            }).start(() => !cancelled && setCardT(null));
-          }
-        }
-        if (morph.icon && iconTo) {
-          const tr = flipTransform(iconFlip, morph.icon, iconTo);
-          if (tr) {
-            iconFlip.setValue(0);
-            setIconT(tr);
-            Animated.timing(iconFlip, {
-              toValue: 1,
-              duration: FLIP_ICON_MS,
-              easing: FLIP_ICON_EASING,
-              useNativeDriver: true,
-            }).start(() => !cancelled && setIconT(null));
-          }
-        }
-      })();
-    });
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(id);
-    };
-    // Mount only: the morph is a one-shot handshake with the screen we came from.
-  }, []);
+  /* KICKED BY onLayout, NOT BY A TIMER. "Where it now is" only means anything
+     once the page has been laid out, and onLayout is the exact moment that
+     becomes true — a requestAnimationFrame is a guess that is sometimes early
+     (nothing to measure) and always at least one frame late. Those frames are
+     the whole gap between the tap and the card starting to move. */
+  const morphKicked = useRef(false);
+  const morphCancelled = useRef(false);
+  useEffect(() => () => { morphCancelled.current = true; }, []);
+
+  const startMorph = useCallback(() => {
+    if (morphKicked.current) return;
+    if (!morph?.card && !morph?.icon) return;
+    morphKicked.current = true;
+
+    void (async () => {
+      const [cardTo, iconTo] = await Promise.all([
+        measureRect(shellRef.current),
+        measureRect(iconRef.current),
+      ]);
+      if (morphCancelled.current) return;
+
+      const cardTr = morph.card && cardTo ? flipTransform(flip, morph.card, cardTo) : null;
+      const iconTr = morph.icon && iconTo ? flipTransform(iconFlip, morph.icon, iconTo) : null;
+
+      if (cardTr) flip.setValue(0);
+      if (iconTr) iconFlip.setValue(0);
+
+      // One commit: the transforms land and the elements become visible
+      // together, so neither is ever painted at rest before it has flown.
+      setCardT(cardTr);
+      setIconT(iconTr);
+      setCardHidden(false);
+      setIconHidden(false);
+
+      if (cardTr) {
+        Animated.timing(flip, {
+          toValue: 1,
+          duration: FLIP_CARD_MS,
+          easing: FLIP_CARD_EASING,
+          useNativeDriver: true,
+        }).start(() => !morphCancelled.current && setCardT(null));
+      }
+      if (iconTr) {
+        Animated.timing(iconFlip, {
+          toValue: 1,
+          duration: FLIP_ICON_MS,
+          easing: FLIP_ICON_EASING,
+          useNativeDriver: true,
+        }).start(() => !morphCancelled.current && setIconT(null));
+      }
+    })();
+    // One-shot: the morph is a handshake with the screen we came from.
+  }, [morph, flip, iconFlip]);
 
   const handleBack = useCallback(() => {
     void (async () => {
@@ -307,6 +323,7 @@ export default function CoinDetailView({
             collapsable={false}
             style={[
               styles.headChip,
+              iconHidden && styles.preMorph,
               iconT
                 ? {
                     transform: [
@@ -336,8 +353,10 @@ export default function CoinDetailView({
         <Animated.View
           ref={shellRef}
           collapsable={false}
+          onLayout={startMorph}
           style={[
             styles.shell,
+            cardHidden && styles.preMorph,
             cardT
               ? {
                   transform: [
@@ -566,6 +585,9 @@ const styles = StyleSheet.create({
   headSub: { fontFamily: FONT.mono, fontSize: 8, letterSpacing: 1.6, marginTop: 3 },
   headChip: { height: 40, width: 40, borderRadius: 16, alignItems: "center", justifyContent: "center", overflow: "hidden" },
   glyph: { zIndex: 1 },
+
+  /** Held back until its FLIP transform exists — see the morph effect above. */
+  preMorph: { opacity: 0 },
 
   cardBay: { minHeight: 250, marginBottom: 16 },
   shell: {
