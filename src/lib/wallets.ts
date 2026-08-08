@@ -1,8 +1,11 @@
 /**
  * wallets.ts — persistent (encrypted) wallet storage over AsyncStorage.
  *
- * Only ciphertext is written. The list mirrors the extension's shape so a
- * future multi-wallet UI drops in, but this milestone only ever holds one.
+ * Only ciphertext is written. The list mirrors the extension's shape, and now
+ * actually holds more than one: `addWallet` appends and `setActiveWallet`
+ * chooses. Every entry is sealed with the SAME password — that is what lets the
+ * accounts sheet add one without asking for it again, and it is why unlocking
+ * decrypts the whole list in one go.
  */
 import {
   decryptWallet,
@@ -96,6 +99,35 @@ export async function createInitialState(opts: {
   const state: WalletsState = { active: 0, list: [entry] };
   await writeWalletsState(state);
   return state;
+}
+
+/**
+ * Encrypt + append a new account, and make it the active one.
+ *
+ * Sealed with the password the session is already holding, so nothing is asked
+ * for again — the same trade the extension makes in AddWalletInline. Returns
+ * the new list and the index it landed at, so the caller can fold the (already
+ * decrypted) wallet into the live session without a round trip through disk.
+ */
+export async function addWallet(opts: {
+  name: string;
+  password: string;
+  fullWallet: StoredWallet;
+}): Promise<{ state: WalletsState; index: number }> {
+  const state = (await readWalletsState()) ?? { active: 0, list: [] };
+  const encrypted = await encryptWallet(opts.fullWallet, opts.password);
+  state.list = [...state.list, entryFromWallet(makeId(), opts.name, encrypted, opts.fullWallet)];
+  state.active = state.list.length - 1;
+  await writeWalletsState(state);
+  return { state, index: state.active };
+}
+
+/** Remember which account the wallet should reopen in. */
+export async function setActiveWallet(index: number): Promise<void> {
+  const state = await readWalletsState();
+  if (!state || index < 0 || index >= state.list.length) return;
+  state.active = index;
+  await writeWalletsState(state);
 }
 
 /** Wipe all wallet state (used for a full reset). */

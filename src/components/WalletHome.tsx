@@ -283,12 +283,7 @@ export default function WalletHome({
         </Animated.ScrollView>
       )}
 
-      <AccountsSheet
-        open={accountsOpen}
-        onClose={() => setAccountsOpen(false)}
-        isNoid={isNoid}
-        activeName={activeEntry?.name ?? ""}
-      />
+      <AccountsSheet open={accountsOpen} onClose={() => setAccountsOpen(false)} isNoid={isNoid} />
     </Animated.View>
   );
 }

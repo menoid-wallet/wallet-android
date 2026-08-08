@@ -15,7 +15,15 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { Animated, Easing, Image, Text, View, StyleSheet, ViewStyle } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import Svg, { Defs, Ellipse, LinearGradient as SvgGradient, Stop, Path } from "react-native-svg";
+import Svg, {
+  Circle,
+  Defs,
+  Ellipse,
+  LinearGradient as SvgGradient,
+  RadialGradient as SvgRadialGradient,
+  Stop,
+  Path,
+} from "react-native-svg";
 import { FONT } from "../../theme/tokens";
 
 const blank = require("../../../assets/brand/menoid-logo-blank.png");
@@ -34,6 +42,25 @@ const EYE = {
 
 const IRIS = ["#4d30af", "#7b5add", "#8260e4", "#7d58df"] as const;
 const IRIS_STOPS = [0, 0.1, 0.3, 0.9] as const;
+
+/* ── The "confirmed!" beat, transcribed from the extension's CSS keyframes ──
+   al-winkfast: 2.2s, cubic-bezier(0.4,0,0.3,1), 0.2s delay, and within each
+   cycle the eye is open until 20%, shut at 23%, open again by 26%. */
+const WINK_DELAY = 200; // first pass only
+const WINK_LEAD = 440; //  0% → 20%
+const WINK_SNAP = 66; //  each of 20%→23% and 23%→26%
+const WINK_HOLD = 1628; // 26% → 100%
+const WINK_EASE = Easing.bezier(0.4, 0, 0.3, 1);
+
+/* al-shine: a glare flaring behind the winking eye. 1.6s, 0.3s delay;
+   invisible to 16%, peak at 42%, gone and grown by 100%. */
+const SHINE = { hold: 256, rise: 416, fade: 928, delay: 300 };
+/* al-twinkle: a sparkle popping beside it. 1.6s, 0.28s delay. */
+const TWINKLE = { hold: 672, pop: 288, settle: 224, fade: 224, tail: 192, delay: 280 };
+
+/* Both are placed in the artwork's 1024 space, like everything else here. */
+const SHINE_BOX = { cx: 335 / 1024, cy: 395 / 1024, r: 120 / 1024 };
+const TWINKLE_BOX = { cx: 252 / 1024, cy: 300 / 1024, r: 22 / 1024 };
 
 /** Anything that can drive a numeric transform: a value, a composition of them. */
 type AnimNum = Animated.Value | Animated.AnimatedInterpolation<number> | Animated.AnimatedMultiplication<number>;
@@ -290,7 +317,13 @@ function AnimatedLogoBase({
   }, [sleeping, shut]);
 
   /* The wink: one fast shut-and-open on the viewer's-left eye only. Its partner
-     holds perfectly still, which is what separates a wink from a blink. */
+     holds perfectly still, which is what separates a wink from a blink.
+     TIMED OFF THE EXTENSION'S `al-winkfast`, keyframe for keyframe — a 2.2s
+     cycle whose shut-and-open is only 20%→26% of it, so 66ms down and 66ms up
+     with the eye simply open for the other two seconds. It was a 110/150ms
+     squeeze here with a back-eased overshoot on the way up, which is nearly
+     four times as long and bounces: that reads as a slow blink, not a wink.
+     The snap is the whole character of it. */
   useEffect(() => {
     if (!winking) {
       wink.setValue(1);
@@ -298,14 +331,64 @@ function AnimatedLogoBase({
     }
     const loop = Animated.loop(
       Animated.sequence([
-        Animated.timing(wink, { toValue: 0.06, duration: 110, easing: Easing.in(Easing.quad), useNativeDriver: true }),
-        Animated.timing(wink, { toValue: 1, duration: 150, easing: Easing.out(Easing.back(2)), useNativeDriver: true }),
-        Animated.delay(1500),
+        Animated.delay(WINK_LEAD),
+        Animated.timing(wink, { toValue: 0.08, duration: WINK_SNAP, easing: WINK_EASE, useNativeDriver: true }),
+        Animated.timing(wink, { toValue: 1, duration: WINK_SNAP, easing: WINK_EASE, useNativeDriver: true }),
+        Animated.delay(WINK_HOLD),
       ])
     );
-    loop.start();
-    return () => loop.stop();
+    // animation-delay in CSS only offsets the FIRST pass, so it is a timeout
+    // rather than another delay inside the loop.
+    const kick = setTimeout(() => loop.start(), WINK_DELAY);
+    return () => {
+      clearTimeout(kick);
+      loop.stop();
+    };
   }, [winking, wink]);
+
+  /* The two things that ride along with the wink. They are half of what makes
+     the beat read as "confirmed" rather than "the mark blinked", and they were
+     missing here entirely. Mounted only while winking, and every frame is a
+     transform or an opacity, so both run on the native driver. */
+  const shine = useRef(new Animated.Value(0)).current;
+  const twinkle = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!winking) return;
+    const to = (v: Animated.Value, toValue: number, duration: number) =>
+      Animated.timing(v, { toValue, duration, easing: Easing.out(Easing.quad), useNativeDriver: true });
+    const reset = (v: Animated.Value) =>
+      Animated.timing(v, { toValue: 0, duration: 0, useNativeDriver: true });
+
+    const shineLoop = Animated.loop(
+      Animated.sequence([
+        reset(shine),
+        Animated.delay(SHINE.hold),
+        to(shine, 1, SHINE.rise),
+        to(shine, 2, SHINE.fade),
+      ])
+    );
+    const twinkleLoop = Animated.loop(
+      Animated.sequence([
+        reset(twinkle),
+        Animated.delay(TWINKLE.hold),
+        to(twinkle, 1, TWINKLE.pop),
+        to(twinkle, 2, TWINKLE.settle),
+        to(twinkle, 3, TWINKLE.fade),
+        Animated.delay(TWINKLE.tail),
+      ])
+    );
+    const a = setTimeout(() => shineLoop.start(), SHINE.delay);
+    const b = setTimeout(() => twinkleLoop.start(), TWINKLE.delay);
+    return () => {
+      clearTimeout(a);
+      clearTimeout(b);
+      shineLoop.stop();
+      twinkleLoop.stop();
+      shine.setValue(0);
+      twinkle.setValue(0);
+    };
+  }, [winking, shine, twinkle]);
 
   /* Watching the voyage cloud: the eyes sweep side to side on the SAME 2.4s
      period as CloudVoyage's drift, so the mark reads as tracking it. */
@@ -371,13 +454,78 @@ function AnimatedLogoBase({
       style={[{ width: size, height: size, transform: [{ translateY }] }, style]}>
       <Image source={blank} style={{ width: size, height: size }} resizeMode="contain" fadeDuration={0} />
       <View style={StyleSheet.absoluteFill} pointerEvents="none">
+        {/* behind the eyes, like the extension's <circle> before <g>{eyes} */}
+        {winking && <Shine size={size} at={shine} />}
         <Eye size={size} x={EYE.leftX} lid={leftOpen} aim={aimLeft} />
         <Eye size={size} x={EYE.rightX} lid={rightOpen} aim={aimRight} />
         {sleeping ? <Snore /> : <Smile />}
+        {winking && <Twinkle size={size} at={twinkle} />}
       </View>
       {sleeping && <Zzz size={size} />}
     </Animated.View>
   );
 }
+
+/* ── the wink's two flourishes ──
+   Each is a STATIC svg inside an animated wrapper. Animating the SVG's own
+   geometry would put every frame back on the JS thread, which is the mistake
+   this file was rewritten to undo (see the header). */
+
+const Shine = memo(function Shine({ size, at }: { size: number; at: Animated.Value }) {
+  const d = size * SHINE_BOX.r * 2;
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={{
+        position: "absolute",
+        left: size * (SHINE_BOX.cx - SHINE_BOX.r),
+        top: size * (SHINE_BOX.cy - SHINE_BOX.r),
+        width: d,
+        height: d,
+        opacity: at.interpolate({ inputRange: [0, 1, 2], outputRange: [0, 0.85, 0] }),
+        transform: [{ scale: at.interpolate({ inputRange: [0, 1, 2], outputRange: [0.2, 1.1, 1.55] }) }],
+      }}>
+      <Svg width={d} height={d} viewBox="0 0 100 100">
+        <Defs>
+          <SvgRadialGradient id="al-glow" cx="50%" cy="50%" r="50%">
+            <Stop offset="0%" stopColor="#ffffff" stopOpacity={0.95} />
+            <Stop offset="45%" stopColor="#E4D6FF" stopOpacity={0.55} />
+            <Stop offset="100%" stopColor="#C9B0FF" stopOpacity={0} />
+          </SvgRadialGradient>
+        </Defs>
+        <Circle cx={50} cy={50} r={50} fill="url(#al-glow)" />
+      </Svg>
+    </Animated.View>
+  );
+});
+
+const Twinkle = memo(function Twinkle({ size, at }: { size: number; at: Animated.Value }) {
+  const d = size * TWINKLE_BOX.r * 2;
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={{
+        position: "absolute",
+        left: size * (TWINKLE_BOX.cx - TWINKLE_BOX.r),
+        top: size * (TWINKLE_BOX.cy - TWINKLE_BOX.r),
+        width: d,
+        height: d,
+        opacity: at.interpolate({ inputRange: [0, 1, 2, 3], outputRange: [0, 1, 0.85, 0] }),
+        transform: [
+          { scale: at.interpolate({ inputRange: [0, 1, 2, 3], outputRange: [0.3, 1.25, 0.95, 0.3] }) },
+          {
+            rotate: at.interpolate({
+              inputRange: [0, 1, 2, 3],
+              outputRange: ["-30deg", "0deg", "10deg", "-30deg"],
+            }),
+          },
+        ],
+      }}>
+      <Svg width={d} height={d} viewBox="-22 -22 44 44">
+        <Path d="M0 -22 L6 -6 L22 0 L6 6 L0 22 L-6 6 L-22 0 L-6 -6 Z" fill="#E3D3FF" />
+      </Svg>
+    </Animated.View>
+  );
+});
 
 export default memo(AnimatedLogoBase);
