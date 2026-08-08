@@ -6,10 +6,13 @@
  * in window coordinates and the eyes aim at it, each from its own socket, so
  * they converge on the character just entered.
  *
- * Unlock choreography (the reward for getting it right):
- *   1. the form sinks and fades out
- *   2. the mark rises up out of the sky
- *   3. only then does the app hand over to the unlocked screen
+ * Unlock choreography: the whole screen simply SLIDES OFF TO THE LEFT, in one
+ * piece, while the wallet comes in from the right behind it. It used to break
+ * itself up — form sinking, mark climbing out of frame, badge fading — and each
+ * piece leaving on its own schedule read as three things happening rather than
+ * one screen being replaced. The slide is driven by `progress`, which App owns
+ * and the wallet reads too; see the hand-over note in App.tsx.
+ *
  * A wrong password shakes the field instead.
  */
 import React, { useCallback, useRef, useState } from "react";
@@ -37,15 +40,20 @@ import { useWallet } from "../../context/WalletContext";
 import { COLORS, FONT } from "../../theme/tokens";
 
 export default function LockScreen({
+  progress,
+  durationMs,
   onDecrypted,
   onExited,
 }: {
-  /** Fires the moment the password checks out — App mounts the wallet UNDER us. */
+  /** The shared hand-over, 0 → 1. We start it; the wallet rides it too. */
+  progress: Animated.Value;
+  durationMs: number;
+  /** Fires the moment the password checks out — App mounts the wallet beside us. */
   onDecrypted: () => void;
   /** Fires when the exit has finished — App can drop us now. */
   onExited: () => void;
 }) {
-  const { height } = useWindowDimensions();
+  const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const { unlock } = useWallet();
 
@@ -56,7 +64,6 @@ export default function LockScreen({
   const [gaze, setGaze] = useState<GazePoint | null>(null);
 
   const shake = useRef(new Animated.Value(0)).current;
-  const exit = useRef(new Animated.Value(0)).current; // 0 = resting, 1 = gone
 
   function runShake() {
     shake.setValue(0);
@@ -83,43 +90,47 @@ export default function LockScreen({
       runShake();
       return;
     }
-    /* Correct. Hand over FIRST — the wallet mounts behind us while this screen
+    /* Correct. Hand over FIRST — the wallet mounts beside us while this screen
        still stands there saying "Unlocking…" — and only leave once that work is
        done. Playing the exit first and swapping after meant the animation ended
        into a second of empty lock screen while the wallet built itself.
 
        The keyboard goes before anything else and gets a beat to retract, or the
-       window is still resizing while the mark climbs: a layout pass per frame,
-       on the one animation that has to be the smoothest in the app. */
+       window is still resizing while we slide: a layout pass per frame, on the
+       one animation that has to be the smoothest in the app. */
     setGaze(null);
     Keyboard.dismiss();
     onDecrypted();
     setTimeout(() => {
       InteractionManager.runAfterInteractions(() => {
-        Animated.timing(exit, {
+        Animated.timing(progress, {
           toValue: 1,
-          duration: 560,
-          easing: Easing.bezier(0.32, 0, 0.1, 1),
+          duration: durationMs,
+          easing: Easing.bezier(0.4, 0, 0.15, 1),
           useNativeDriver: true,
         }).start(({ finished }) => finished && onExited());
       });
     }, 90);
-  }, [loading, password, unlock, exit, onDecrypted, onExited]);
+  }, [loading, password, unlock, progress, durationMs, onDecrypted, onExited]);
 
-  /* The mark stops floating for the exit. Two transforms fighting over the same
-     view is what made the climb look like it was being tugged. */
+  /* The mark stops floating for the exit — a float and a slide fighting over
+     the same pixels is what made the old exit look tugged. */
   const leaving = loading;
 
-  /* form sinks, mark climbs out of frame */
-  const formShift = exit.interpolate({ inputRange: [0, 1], outputRange: [0, 150] });
-  const formFade = exit.interpolate({ inputRange: [0, 0.55], outputRange: [1, 0], extrapolate: "clamp" });
-  const markShift = exit.interpolate({ inputRange: [0, 1], outputRange: [0, -height * 0.55] });
-  const markScale = exit.interpolate({ inputRange: [0, 1], outputRange: [1, 0.62] });
-  const markFade = exit.interpolate({ inputRange: [0.45, 1], outputRange: [1, 0], extrapolate: "clamp" });
+  /* One piece, straight off to the left. */
+  const slideOut = progress.interpolate({ inputRange: [0, 1], outputRange: [0, -width] });
 
   return (
-    <View style={styles.fill}>
-      <View style={{ position: "absolute", top: insets.top + 14, left: 18, zIndex: 20 }}>
+    <Animated.View style={[styles.fill, { transform: [{ translateX: slideOut }] }]}>
+      {/* Rides the slide with everything else — it used to sit outside the exit
+          entirely and stayed put for a second after the wallet had arrived. */}
+      <View
+        style={{
+          position: "absolute",
+          top: insets.top + 14,
+          left: 18,
+          zIndex: 20,
+        }}>
         <CloudChip contentStyle={styles.brandChip} lobeBase={28}>
           <AnimatedLogo size={22} blink={false} />
           <MenoidWordmark height={13} tone="violet" />
@@ -130,25 +141,9 @@ export default function LockScreen({
         style={styles.fill}
         behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <View style={[styles.center, { paddingBottom: insets.bottom + 110 }]}>
-          <Animated.View
-            renderToHardwareTextureAndroid
-            shouldRasterizeIOS
-            style={{
-              opacity: markFade,
-              transform: [{ translateY: markShift }, { scale: markScale }],
-            }}>
-            <AnimatedLogo size={150} float={!leaving} blink gaze={gaze} style={{ marginBottom: 36 }} />
-          </Animated.View>
+          <AnimatedLogo size={150} float={!leaving} blink gaze={gaze} style={{ marginBottom: 36 }} />
 
-          <Animated.View
-            renderToHardwareTextureAndroid
-            shouldRasterizeIOS
-            style={{
-              width: "100%",
-              alignItems: "center",
-              opacity: formFade,
-              transform: [{ translateY: formShift }],
-            }}>
+          <View style={styles.formBay}>
             <Animated.View
               style={[styles.field, !!error && styles.fieldError, { transform: [{ translateX: shake }] }]}>
               <PasswordField
@@ -207,16 +202,17 @@ export default function LockScreen({
                 <Text style={styles.unlockText}>{loading ? "Unlocking…" : "Unlock"}</Text>
               </CloudChip>
             </View>
-          </Animated.View>
+          </View>
         </View>
       </KeyboardAvoidingView>
-    </View>
+    </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
   fill: { flex: 1 },
   center: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 30 },
+  formBay: { width: "100%", alignItems: "center" },
   brandChip: { gap: 7, paddingHorizontal: 15, paddingVertical: 7 },
 
   field: {

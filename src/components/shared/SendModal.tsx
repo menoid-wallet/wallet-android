@@ -196,7 +196,7 @@ export default memo(function SendModal({
       const parsed = ethers.parseUnits(tokenAmount.toFixed(decimalsFor(network)), decimalsFor(network));
       // Saved immediately so the log shows it right away, then patched with the
       // gas once the receipt lands (EVM only — the others report none).
-      saveOpenTx(fromAddress, {
+      saveOpenTx(fromAddress, network, {
         type: "open",
         txHash: r.hash,
         gasUsed: null,
@@ -207,7 +207,8 @@ export default memo(function SendModal({
       });
       r.wait()
         .then((receipt) => {
-          if (receipt?.gasUsed) updateOpenTx(fromAddress, r.hash, { gasUsed: receipt.gasUsed });
+          if (receipt?.gasUsed)
+            updateOpenTx(fromAddress, network, r.hash, { gasUsed: receipt.gasUsed });
         })
         .catch(() => {});
     } catch (e: any) {

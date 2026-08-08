@@ -46,6 +46,7 @@ import {
   GestureHandlerRootView,
   PanGestureHandler,
   State,
+  type PanGestureHandlerGestureEvent,
   type PanGestureHandlerStateChangeEvent,
 } from "react-native-gesture-handler";
 import Svg, { Path } from "react-native-svg";
@@ -196,8 +197,20 @@ export default memo(function LiquidSheet({
     }
   }, [open, mounted, slide, dragRaw]);
 
-  const onGesture = useMemo(
-    () => Animated.event([{ nativeEvent: { translationY: dragRaw } }], { useNativeDriver: true }),
+  /* Hand-written rather than an Animated.event, and it MUST stay that way. On
+     the New Architecture a gesture-handler cannot take a native-driven
+     Animated.event: the event object is passed straight through as a prop and
+     the first touch takes the app down with
+       "Expected `onGestureHandlerEvent` listener to be a function".
+     Dropping to useNativeDriver:false would fix the crash and cost far more —
+     `dragRaw` feeds the same transform as the slide, so a JS-driven drag would
+     drag the whole sheet's animation onto the JS thread with it. setValue on a
+     native value writes straight through to the native graph, so only the event
+     delivery is a JS hop and everything downstream stays where it was. */
+  const onGesture = useCallback(
+    (e: PanGestureHandlerGestureEvent) => {
+      dragRaw.setValue(e.nativeEvent.translationY);
+    },
     [dragRaw]
   );
 

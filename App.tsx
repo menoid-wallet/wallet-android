@@ -23,8 +23,8 @@
  * The decrypted keys live only in the WalletProvider's memory, so a cold start
  * always begins at "locked" once a wallet exists.
  */
-import React, { useEffect, useState } from "react";
-import { View, Image, StyleSheet, InteractionManager } from "react-native";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { Animated, View, Image, StyleSheet, InteractionManager } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import * as SplashScreen from "expo-splash-screen";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -54,43 +54,52 @@ function ModeBackdrop() {
 }
 
 /**
- * THE UNLOCK HAND-OVER IS AN OVERLAP, NOT A SWAP.
+ * THE UNLOCK HAND-OVER IS ONE ANIMATION SHARED BY TWO SCREENS.
  *
- * WalletHome is an expensive mount — six token bars, the treasure card and all
- * of its weather. Playing the lock screen's exit and only THEN swapping meant
- * the animation finished, and the user then sat looking at an empty lock screen
- * for about a second while that mount blocked the JS thread.
+ * `handoff` runs 0 → 1 exactly once per unlock: the lock screen slides out to
+ * the left on it, and the wallet comes in from the right — growing to full size
+ * as it arrives — on the same value. It lives HERE, above both, and not one
+ * value in each, because two timings started from the same callback still begin
+ * a frame apart (the second one has to wait for a React commit first), and a
+ * frame of skew between two halves that are meant to tile is a seam you can
+ * see. One value, one native node, no seam. The lock screen owns starting it,
+ * since it is the one that knows the password was right.
  *
- * So the wallet is mounted the instant the password checks out, UNDER the lock
- * screen, which is still standing there showing "Unlocking…". Both sides then
- * wait on the same InteractionManager queue, so the lock screen's exit and the
- * wallet's arrival begin on the same beat and cross over each other. Nothing
- * is ever on screen with nothing happening.
+ * The wallet is also MOUNTED the instant the password checks out, parked
+ * off-screen right, while the lock screen still stands there saying
+ * "Unlocking…". It is an expensive mount — six token bars, the treasure card
+ * and all of its weather — and playing the exit first meant the animation
+ * finished into a second of empty lock screen while that mount blocked the JS
+ * thread. Nothing is ever on screen with nothing happening.
  */
+const HANDOFF_MS = 820;
+
 function AppInner({ initial }: { initial: AppState }) {
   const { lock } = useWallet();
   const [state, setState] = useState<AppState>(initial);
   const [lockMounted, setLockMounted] = useState(initial === "locked");
+  const handoff = useRef(new Animated.Value(0)).current;
+
+  const relock = useCallback(() => {
+    setState("locked");
+    setLockMounted(true);
+    handoff.setValue(0);
+  }, [handoff]);
 
   if (state === "onboarding") {
-    return (
-      <Welcome
-        onDone={() => {
-          setState("locked");
-          setLockMounted(true);
-        }}
-      />
-    );
+    return <Welcome onDone={relock} />;
   }
 
   return (
-    <View style={StyleSheet.absoluteFill}>
+    /* Clipped, or the lock screen is still there off to the left — Android will
+       happily draw a child outside its parent's bounds. */
+    <View style={styles.stage}>
       {state === "unlocked" && (
         <WalletHome
+          arrive={handoff}
           onLock={() => {
             lock();
-            setState("locked");
-            setLockMounted(true);
+            relock();
           }}
         />
       )}
@@ -98,6 +107,8 @@ function AppInner({ initial }: { initial: AppState }) {
       {lockMounted && (
         <View style={StyleSheet.absoluteFill}>
           <LockScreen
+            progress={handoff}
+            durationMs={HANDOFF_MS}
             onDecrypted={() => setState("unlocked")}
             onExited={() => setLockMounted(false)}
           />
@@ -170,5 +181,6 @@ export default function App() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: SKY_OPEN.base },
+  stage: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, overflow: "hidden" },
   preload: { width: 1, height: 1, opacity: 0 },
 });

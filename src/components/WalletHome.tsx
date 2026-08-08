@@ -26,7 +26,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Animated,
   Easing,
-  InteractionManager,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -39,7 +38,6 @@ import Svg, { Path } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWallet, type WalletMode } from "../context/WalletContext";
 import { useBackHandler } from "../lib/useBackHandler";
-import type { NetworkId } from "../lib/networks";
 import { modeMix, onModeScroll, setModeWidth } from "../lib/modeMotion";
 import AnimatedLogo from "./brand/AnimatedLogo";
 import MenoidWordmark from "./brand/MenoidWordmark";
@@ -63,25 +61,38 @@ function tween(mix: Animated.Value, pick: (t: typeof OPEN) => string) {
   return mix.interpolate({ inputRange: [0, 1], outputRange: [pick(OPEN), pick(NOID)] });
 }
 
-export default function WalletHome({ onLock }: { onLock: () => void }) {
+export default function WalletHome({
+  onLock,
+  arrive,
+}: {
+  onLock: () => void;
+  /**
+   * The hand-over, 0 → 1, owned by App and shared with the lock screen — see
+   * the note there. At 0 this screen is parked off to the right and smaller; at
+   * 1 it is home and full size. It sits at 0 for as long as it takes to mount,
+   * which is the point: the arrival cannot quietly play out behind a lock
+   * screen that has not started to leave, which is what made it look like the
+   * wallet was simply already there.
+   */
+  arrive?: Animated.Value;
+}) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const { mode, setMode, activeEntry } = useWallet();
 
   const [tab, setTab] = useState<Tab>("wallet");
   const [accountsOpen, setAccountsOpen] = useState(false);
-  /* Lifted here, as in the extension, so the open coin page survives an
-     open ↔ noid switch — the same coin re-opens in the other mode instead of
-     dropping back to the list. */
-  const [activeCoin, setActiveCoin] = useState<NetworkId | null>(null);
+  /* The coin page lives inside OpenModeView now (it is a page of that view's
+     own slide). All this level needs to know is whether one is open — to route
+     Back into it, and to stop the mode pager competing with its back-swipe. */
+  const [coinOpen, setCoinOpen] = useState(false);
+  const closeCoin = useRef<() => void>(() => {});
+  const registerClose = useCallback((fn: () => void) => {
+    closeCoin.current = fn;
+  }, []);
 
   const isNoid = mode === "noid";
   const settingsOpen = tab === "settings";
-
-  const openScroll = useRef<ScrollView>(null);
-  const scrollOpenToTop = useCallback(() => {
-    openScroll.current?.scrollTo({ y: 0, animated: false });
-  }, []);
 
   useEffect(() => setModeWidth(width), [width]);
 
@@ -128,44 +139,32 @@ export default function WalletHome({ onLock }: { onLock: () => void }) {
   useBackHandler(
     useCallback(() => {
       if (accountsOpen) { setAccountsOpen(false); return true; }
-      if (activeCoin) { setActiveCoin(null); return true; }
+      if (coinOpen) { closeCoin.current(); return true; }
       if (settingsOpen) { setTab("wallet"); return true; }
       return false; // home, nothing stacked — let Android leave the app
-    }, [accountsOpen, activeCoin, settingsOpen])
+    }, [accountsOpen, coinOpen, settingsOpen])
   );
 
   /* ── Arrival ──
-     The lock screen hands over by climbing its mark UP out of frame, so the
-     wallet rises in from below to finish the same movement. Without this the
-     home simply blinked into existence at the end of a careful animation, which
-     made the lock screen look like it had been cut off mid-sentence. Opacity
-     and transform only, so it is one native pass over the whole surface. */
-  const arrive = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    /* Deferred to after the interactions queue drains, which is also what the
-       lock screen waits on before it starts leaving — so the two animations
-       begin on the same beat and cross over rather than queueing up behind this
-       screen's (heavy) mount. */
-    const task = InteractionManager.runAfterInteractions(() => {
-      Animated.timing(arrive, {
-        toValue: 1,
-        duration: 560,
-        easing: Easing.bezier(0.16, 1, 0.3, 1),
-        useNativeDriver: true,
-      }).start();
-    });
-    return () => task.cancel();
-  }, [arrive]);
+     In from the right as the lock screen slides out to the left, GROWING to
+     full size as it comes: the slide says "next screen", the scale says "and
+     this one is the wallet opening up". Both are the one shared value, so the
+     two screens tile with no seam. Standalone (no `arrive` passed) it is simply
+     already home. */
+  const parked = useRef(new Animated.Value(1)).current;
+  const at = arrive ?? parked;
 
   return (
     <Animated.View
       style={[
         styles.root,
         {
-          opacity: arrive.interpolate({ inputRange: [0, 0.45], outputRange: [0, 1], extrapolate: "clamp" }),
+          /* Only enough of a fade to cover the very first frame — the slide is
+             what carries it, not a cross-dissolve. */
+          opacity: at.interpolate({ inputRange: [0, 0.12], outputRange: [0, 1], extrapolate: "clamp" }),
           transform: [
-            { translateY: arrive.interpolate({ inputRange: [0, 1], outputRange: [38, 0] }) },
-            { scale: arrive.interpolate({ inputRange: [0, 1], outputRange: [0.972, 1] }) },
+            { translateX: at.interpolate({ inputRange: [0, 1], outputRange: [width, 0] }) },
+            { scale: at.interpolate({ inputRange: [0, 1], outputRange: [0.82, 1] }) },
           ],
         },
       ]}>
@@ -262,24 +261,18 @@ export default function WalletHome({ onLock }: { onLock: () => void }) {
           bounces={false}
           overScrollMode="never"
           showsHorizontalScrollIndicator={false}
-          scrollEnabled={!activeCoin && !accountsOpen}
+          scrollEnabled={!coinOpen && !accountsOpen}
           scrollEventThrottle={16}
           onScroll={onModeScroll}
           onMomentumScrollEnd={(e) => onPagerSettled(e.nativeEvent.contentOffset.x)}
           onScrollEndDrag={(e) => onPagerSettled(e.nativeEvent.contentOffset.x)}
           contentOffset={{ x: isNoid ? width : 0, y: 0 }}
           style={styles.body}>
-          <ScrollView
-            ref={openScroll}
-            style={{ width }}
-            contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
-            showsVerticalScrollIndicator={false}>
-            <OpenModeView
-              activeCoin={activeCoin}
-              setActiveCoin={setActiveCoin}
-              scrollToTop={scrollOpenToTop}
-            />
-          </ScrollView>
+          {/* OpenModeView owns its own scrolling: it is two pages on a slide,
+              and each needs to scroll on its own. */}
+          <View style={{ width }}>
+            <OpenModeView onCoinOpenChange={setCoinOpen} registerClose={registerClose} />
+          </View>
 
           <ScrollView
             style={{ width }}

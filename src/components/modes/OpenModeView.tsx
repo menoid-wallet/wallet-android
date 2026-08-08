@@ -9,6 +9,26 @@
  * The balance poll is the extension's, with one change: it skipped a round when
  * `document.hidden`, and the phone's equivalent question is AppState. A
  * backgrounded wallet must not keep six chains' RPCs warm.
+ *
+ * THE COIN PAGE IS A SLIDE, NOT A SHARED-ELEMENT MORPH. The treasure card used
+ * to fly into the graph card and back. It was never convincing: only the card's
+ * shell can be transformed (scaling type smears it), so the balance and the
+ * Copy Keys cloud had to blink out before the flight and back in after it, and
+ * the two halves never read as one object. A plain pair of pages — dashboard
+ * left, coin page right — says the same thing without asking anything of the
+ * card. Dragging the coin page right walks back.
+ *
+ * The slide is a PAGING SCROLLVIEW, exactly like the mode pager one level up,
+ * and for the same two reasons. It is Android's own scroller, so the drag, the
+ * fling and the snap all happen off the JS thread. And a PanGestureHandler can
+ * NOT be used here at all: on the New Architecture, handing one an
+ * `Animated.event({useNativeDriver: true})` passes the animated-event OBJECT
+ * through as a plain prop, and the first touch crashes the app with
+ *   "Expected `onGestureHandlerEvent` listener to be a function".
+ * The nesting works because only one of the two pagers is ever enabled: this
+ * one is dead until a coin is open, and the mode pager is disabled while one
+ * is (WalletHome passes `scrollEnabled={!coinOpen}`), so the horizontal drag
+ * always has exactly one owner.
  */
 
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -17,11 +37,14 @@ import {
   Animated,
   Easing,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Path } from "react-native-svg";
 import { useWallet } from "../../context/WalletContext";
 import { getBalance } from "../../lib/rpc";
@@ -34,18 +57,11 @@ import {
   subscribeTxns,
   type TxEntry,
 } from "../../lib/txStore";
-import {
-  measureRect,
-  flipTransform,
-  FLIP_CARD_EASING,
-  FLIP_CARD_MS,
-  type Rect,
-} from "../../lib/flip";
 import AnimatedNumber from "../shared/AnimatedNumber";
 import InlineCopyButton from "../shared/InlineCopyButton";
 import CopyKeysButton from "../shared/CopyKeysButton";
 import TreasureCardShell, { CARD_RADIUS } from "../shared/TreasureCardShell";
-import CoinDetailView, { type CoinAction, type MorphSource } from "../shared/CoinDetailView";
+import CoinDetailView, { type CoinAction } from "../shared/CoinDetailView";
 import ShipsLogEntries from "../shared/ShipsLogEntries";
 import SendModal from "../shared/SendModal";
 import ReceiveModal from "../shared/ReceiveModal";
@@ -57,6 +73,9 @@ const POLL_MS = 6_000;
 const INK = COLORS.violetDeep;
 const INK_RGB = "78,47,142";
 
+/** Long enough for the pager's own scroll to land, if it never says so. */
+const SLIDE_MS = 380;
+
 const EMPTY_BALANCES: Record<NetworkId, string> = {
   monad: "0",
   sepolia: "0",
@@ -67,11 +86,11 @@ const EMPTY_BALANCES: Record<NetworkId, string> = {
 };
 
 export interface ModeViewProps {
-  /** lifted to WalletHome so the open coin survives an open↔noid switch */
-  activeCoin: NetworkId | null;
-  setActiveCoin: (c: NetworkId | null) => void;
-  /** puts the body scroll back at the top when the page changes */
-  scrollToTop: () => void;
+  /** Told whenever a coin page opens or closes, so the shell can route Back
+      and stop the mode pager from competing with the back-swipe. */
+  onCoinOpenChange: (open: boolean) => void;
+  /** Hands the shell a way to walk back — Android's Back must animate too. */
+  registerClose: (close: () => void) => void;
 }
 
 function formatAssetBalance(b: string): string {
@@ -81,25 +100,20 @@ function formatAssetBalance(b: string): string {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 }
 
-export default function OpenModeView({ activeCoin, setActiveCoin, scrollToTop }: ModeViewProps) {
+export default function OpenModeView({ onCoinOpenChange, registerClose }: ModeViewProps) {
   const { wallet, treasureChain } = useWallet();
+  const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
 
   const { prices, loading: pricesLoading } = useTokenPrices();
   const [balances, setBalances] = useState<Record<NetworkId, string>>(EMPTY_BALANCES);
   const mountedRef = useRef(true);
 
-  /* Shared-element state. `morph` is captured at tap time — where the treasure
-     card and the tapped crest WERE — and handed to the coin page to grow out of.
-     `reverseMorph` is the same handshake in the other direction. */
-  const [morph, setMorph] = useState<MorphSource | null>(null);
-  const [reverseMorph, setReverseMorph] = useState<Rect | null>(null);
+  const [activeCoin, setActiveCoin] = useState<NetworkId | null>(null);
   const [txEntries, setTxEntries] = useState<TxEntry[]>([]);
   const [showSend, setShowSend] = useState(false);
   const [showReceive, setShowReceive] = useState(false);
   const [toast, setToast] = useState(false);
-
-  const treasureRef = useRef<View>(null);
-  const barRefs = useRef<Record<string, View | null>>({});
 
   const addresses = useMemo(
     () => ({
@@ -117,8 +131,9 @@ export default function OpenModeView({ activeCoin, setActiveCoin, scrollToTop }:
     [addresses]
   );
 
-  /* The signing account for a chain. The three EVM networks share one, which is
-     also why their ship's logs are shared — the log is keyed by address. */
+  /* The signing account for a chain. The three EVM networks share one — which
+     is exactly why the ship's log is keyed by address AND network, and not by
+     address alone; see lib/txStore. */
   const accountFor = useCallback(
     (id: NetworkId) =>
       id === "solana"
@@ -181,116 +196,98 @@ export default function OpenModeView({ activeCoin, setActiveCoin, scrollToTop }:
   }, [enter]);
 
   /* ── Ship's log ──
-     Hydrated from disk once per address, then kept live by the store's own
-     subscription so a send that just landed shows up without a refetch. */
+     Hydrated from disk once per sender-and-chain, then kept live by the store's
+     own subscription so a send that just landed shows up without a refetch.
+     BOTH halves of that key matter: Monad, Sepolia and Base Sepolia are signed
+     by one EVM account, so keying on the address alone showed every EVM send in
+     all three logs. */
   const logAddress = activeCoin ? addressFor(activeCoin) : "";
   useEffect(() => {
-    if (!logAddress) return;
+    if (!logAddress || !activeCoin) {
+      // Never leave the last coin's log standing behind the next one.
+      setTxEntries([]);
+      return;
+    }
     let alive = true;
     const sync = () => {
-      if (alive) setTxEntries(loadOpenTxns(logAddress));
+      if (alive) setTxEntries(loadOpenTxns(logAddress, activeCoin));
     };
-    void hydrateOpenTxns(logAddress).then(sync);
+    void hydrateOpenTxns(logAddress, activeCoin).then(sync);
     const off = subscribeTxns(sync);
     return () => {
       alive = false;
       off();
     };
-  }, [logAddress]);
+  }, [logAddress, activeCoin]);
 
-  /* ── Reverse morph ──
-     Coming back from the coin page, the treasure card grows OUT of wherever the
-     graph card just was. A ref guard stops a re-render from replaying it. */
-  const reverse = useRef(new Animated.Value(1)).current;
-  const [reverseT, setReverseT] = useState<ReturnType<typeof flipTransform>>(null);
-  const consumedReverse = useRef<Rect | null>(null);
+  /* ── The slide ──
+     Page 0 is the list, page 1 is the coin. Opening is a scrollTo; walking back
+     is either a scrollTo or the user's own thumb, and both land in the same
+     place — `onSettled`, which reads where the pager actually stopped rather
+     than assuming. Page 1 is only MOUNTED while it is needed, so opening has to
+     wait for it to exist before it can scroll to it: `onContentSizeChange` is
+     that signal, and it is exact where a requestAnimationFrame would be a
+     guess. */
+  const pager = useRef<ScrollView>(null);
+  const pendingOpen = useRef(false);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeRef = useRef<NetworkId | null>(null);
+  activeRef.current = activeCoin;
 
-  /* DERIVED DURING RENDER, NOT SET IN AN EFFECT. Effects run after the frame is
-     painted, so hiding the shell from one meant the card was drawn at rest for
-     a frame, vanished, and only then flew in — the "it's there, then it isn't,
-     then it arrives" flicker. A rect is waiting and no transform exists yet is
-     something this render already knows. */
-  const shellHidden = reverseMorph != null && reverseT == null;
+  const clearCloseTimer = () => {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  };
 
-  /* The card's CONTENT does not morph — scaling type would smear it — so it
-     cross-fades instead: out before we leave, back in a beat behind the card on
-     the way home, so it looks like it is riding the card rather than being
-     switched off and on underneath it. */
-  const contentFade = useRef(new Animated.Value(1)).current;
+  /* Drop page 1 — only ever once the pager is back on the list, never during
+     the slide, or the way back would be a slide over a blank half. */
+  const finishClose = useCallback(() => {
+    clearCloseTimer();
+    if (activeRef.current === null) return;
+    setActiveCoin(null);
+    onCoinOpenChange(false);
+  }, [onCoinOpenChange]);
 
-  useEffect(() => {
-    if (activeCoin || !reverseMorph || consumedReverse.current === reverseMorph) return;
-    consumedReverse.current = reverseMorph;
-    let cancelled = false;
-
-    void (async () => {
-      const to = await measureRect(treasureRef.current);
-      const tr = to ? flipTransform(reverse, reverseMorph, to) : null;
-      if (cancelled) return;
-      if (!tr) {
-        // Nothing to fly from — show the card rather than stranding it hidden.
-        setReverseMorph(null);
-        return;
-      }
-      reverse.setValue(0);
-      setReverseT(tr);
-      Animated.timing(reverse, {
-        toValue: 1,
-        duration: FLIP_CARD_MS,
-        easing: FLIP_CARD_EASING,
-        useNativeDriver: true,
-      }).start(() => {
-        if (cancelled) return;
-        setReverseT(null);
-        setReverseMorph(null);
-      });
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeCoin, reverseMorph, reverse]);
-
-  /* Bring the dashboard's content back whenever we land on it, morph or no
-     morph — Android's Back returns without a rect, and the content must not be
-     left faded out in that case. It trails the card by a beat when there IS a
-     card flying home. */
-  useEffect(() => {
-    if (activeCoin) return;
-    const a = Animated.timing(contentFade, {
-      toValue: 1,
-      duration: 360,
-      delay: reverseMorph ? 170 : 0,
-      easing: Easing.out(Easing.quad),
-      useNativeDriver: true,
-    });
-    a.start();
-    return () => a.stop();
-    // Only on arrival; reverseMorph is read once, as it stands at that moment.
-  }, [activeCoin, contentFade]);
-
-  /* Leaving: measure where things ARE, fade the content off the card, and only
-     then navigate. Cutting straight to the coin page left the card's contents
-     blinking out of existence while an empty shell resized — the "stutter". The
-     shell itself stays put through the fade, so the object never disappears. */
   const openCoin = useCallback(
-    async (id: NetworkId) => {
-      const [card, icon] = await Promise.all([
-        measureRect(treasureRef.current),
-        measureRect(barRefs.current[id] ?? null),
-      ]);
-      setMorph({ card, icon });
-      Animated.timing(contentFade, {
-        toValue: 0,
-        duration: 170,
-        easing: Easing.in(Easing.quad),
-        useNativeDriver: true,
-      }).start(() => {
-        setActiveCoin(id);
-        scrollToTop();
-      });
+    (id: NetworkId) => {
+      clearCloseTimer();
+      pendingOpen.current = true;
+      setActiveCoin(id);
+      onCoinOpenChange(true);
     },
-    [setActiveCoin, scrollToTop, contentFade]
+    [onCoinOpenChange]
+  );
+
+  const closeCoin = useCallback(() => {
+    if (activeRef.current === null) return;
+    pendingOpen.current = false;
+    pager.current?.scrollTo({ x: 0, animated: true });
+    clearCloseTimer();
+    // A backstop only: onSettled normally gets there first.
+    closeTimer.current = setTimeout(finishClose, SLIDE_MS + 200);
+  }, [finishClose]);
+
+  useEffect(() => registerClose(closeCoin), [registerClose, closeCoin]);
+  useEffect(() => clearCloseTimer, []);
+
+  const onPagerContentSize = useCallback(
+    (w: number) => {
+      if (pendingOpen.current && w > width * 1.5) {
+        pendingOpen.current = false;
+        pager.current?.scrollTo({ x: width, animated: true });
+      }
+    },
+    [width]
+  );
+
+  /** Landed back on the list — by scrollTo, by Back, or by the user's thumb. */
+  const onSettled = useCallback(
+    (x: number) => {
+      if (x <= 1) finishClose();
+    },
+    [finishClose]
   );
 
   const totalUsd = useMemo(() => {
@@ -312,57 +309,15 @@ export default function OpenModeView({ activeCoin, setActiveCoin, scrollToTop }:
 
   // ── Coin page ─────────────────────────────────────────────────────────────
   const activeChain = activeCoin ? CHAIN_BY_ID[activeCoin] : null;
-  if (activeCoin && activeChain) {
-    const bal = balances[activeCoin] || "0";
-    const account = accountFor(activeCoin);
-    const actions: CoinAction[] = [
-      { key: "send", icon: <SendIcon />, label: "Send", onPress: () => setShowSend(true) },
-      { key: "receive", icon: <ReceiveIcon />, label: "Receive", onPress: () => setShowReceive(true) },
-      { key: "buy", icon: <BuyIcon />, label: "Buy", tone: "muted", onPress: () => setToast(true) },
-    ];
+  const coinAccount = activeCoin ? accountFor(activeCoin) : undefined;
+  const coinBalance = activeCoin ? balances[activeCoin] || "0" : "0";
+  const coinActions: CoinAction[] = [
+    { key: "send", icon: <SendIcon />, label: "Send", onPress: () => setShowSend(true) },
+    { key: "receive", icon: <ReceiveIcon />, label: "Receive", onPress: () => setShowReceive(true) },
+    { key: "buy", icon: <BuyIcon />, label: "Buy", tone: "muted", onPress: () => setToast(true) },
+  ];
 
-    return (
-      <CoinDetailView
-        chain={activeChain}
-        pageTheme="light"
-        balance={bal}
-        price={prices?.[activeCoin]}
-        priceLoading={pricesLoading}
-        balanceLabel="Your Balance"
-        morph={morph}
-        onBack={(graphRect) => {
-          setReverseMorph(graphRect);
-          setActiveCoin(null);
-          setMorph(null);
-          scrollToTop();
-        }}
-        actions={actions}
-        shipsLog={<ShipsLogEntries entries={txEntries} isNoid={false} network={activeCoin} />}>
-        <SendModal
-          open={showSend}
-          onClose={() => setShowSend(false)}
-          chain={activeChain}
-          network={activeCoin}
-          fromAddress={account?.address ?? ""}
-          privateKey={account?.privateKey ?? ""}
-          balance={bal}
-          usdPrice={prices?.[activeCoin]?.usd ?? 0}
-          onSent={() => void fetchAllBalances()}
-        />
-        <ReceiveModal
-          open={showReceive}
-          onClose={() => setShowReceive(false)}
-          mode="open"
-          address={account?.address ?? ""}
-        />
-        <ComingSoonToast
-          show={toast}
-          onDone={() => setToast(false)}
-          message="Buying is on the horizon. Coming soon."
-        />
-      </CoinDetailView>
-    );
-  }
+  const bottomPad = insets.bottom + 24;
 
   // ── Featured (treasure-card) chain ────────────────────────────────────────
   // A specific chain shows its native balance front-and-centre and drops its
@@ -379,9 +334,28 @@ export default function OpenModeView({ activeCoin, setActiveCoin, scrollToTop }:
   });
   const tokenList = featured ? CHAINS.filter((c) => c.id !== featured) : CHAINS;
 
-  // ── Dashboard ─────────────────────────────────────────────────────────────
+  // ── The two pages ─────────────────────────────────────────────────────────
   return (
-    <View>
+    <View style={styles.clip}>
+      <ScrollView
+        ref={pager}
+        horizontal
+        pagingEnabled
+        bounces={false}
+        overScrollMode="never"
+        showsHorizontalScrollIndicator={false}
+        /* Dead until a coin is open, so on the list the horizontal drag belongs
+           to the mode pager above and nothing competes for it. */
+        scrollEnabled={activeCoin !== null}
+        onContentSizeChange={onPagerContentSize}
+        onMomentumScrollEnd={(e) => onSettled(e.nativeEvent.contentOffset.x)}
+        onScrollEndDrag={(e) => onSettled(e.nativeEvent.contentOffset.x)}
+        style={styles.pager}>
+        {/* ── page 0 · the list ── */}
+        <ScrollView
+          style={{ width }}
+          contentContainerStyle={{ paddingBottom: bottomPad }}
+          showsVerticalScrollIndicator={false}>
       <Animated.View
         style={[
           styles.cardBay,
@@ -394,30 +368,9 @@ export default function OpenModeView({ activeCoin, setActiveCoin, scrollToTop }:
           },
         ]}>
         <View style={styles.card}>
-          {/* The shell is the reverse-morph target: the card the coin page's
-              graph card shrinks back into. Only the SHELL is transformed —
-              scaling the content would squash the balance mid-flight. */}
-          <Animated.View
-            ref={treasureRef}
-            collapsable={false}
-            style={[
-              styles.shellBay,
-              shellHidden && styles.preMorph,
-              reverseT
-                ? {
-                    transform: [
-                      { translateX: reverseT.translateX },
-                      { translateY: reverseT.translateY },
-                      { scaleX: reverseT.scaleX },
-                      { scaleY: reverseT.scaleY },
-                    ],
-                  }
-                : null,
-            ]}>
-            <TreasureCardShell isNoid={false} treasureChain={treasureChain} />
-          </Animated.View>
+          <TreasureCardShell isNoid={false} treasureChain={treasureChain} />
 
-          <Animated.View style={[styles.cardContent, { opacity: contentFade }]}>
+          <View style={styles.cardContent}>
             <Text style={styles.treasureLabel}>TREASURE</Text>
 
             {featuredChain ? (
@@ -448,13 +401,10 @@ export default function OpenModeView({ activeCoin, setActiveCoin, scrollToTop }:
             )}
 
             <CopyKeysButton addresses={addresses} isNoid={false} />
-          </Animated.View>
+          </View>
         </View>
       </Animated.View>
 
-      {/* The list goes with the card's content — the whole page clears, leaving
-          only the card and the sky, and then the card leaves too. */}
-      <Animated.View style={{ opacity: contentFade }}>
       {/* Tokens header */}
       <View style={styles.tokensHeader}>
         <Text style={styles.tokensLabel}>TOKENS</Text>
@@ -474,16 +424,65 @@ export default function OpenModeView({ activeCoin, setActiveCoin, scrollToTop }:
             balance={balances[chain.id] || "0"}
             price={prices?.[chain.id]}
             address={addressFor(chain.id)}
-            crestRef={(v) => {
-              barRefs.current[chain.id] = v;
-            }}
-            onPress={() => void openCoin(chain.id)}
+            onPress={() => openCoin(chain.id)}
           />
         ))}
       </View>
 
       <View style={styles.tail} />
-      </Animated.View>
+        </ScrollView>
+
+        {/* ── page 1 · the coin ──
+            Mounted only while it is needed, and torn down after the pager has
+            slid home rather than before it, so the way back is never a slide
+            over an empty half. A fresh mount each time is also why it always
+            opens scrolled to the top. */}
+        {activeCoin && activeChain ? (
+          <ScrollView
+            style={{ width }}
+            contentContainerStyle={{ paddingBottom: bottomPad }}
+            showsVerticalScrollIndicator={false}>
+            <CoinDetailView
+              chain={activeChain}
+              pageTheme="light"
+              balance={coinBalance}
+              price={prices?.[activeCoin]}
+              priceLoading={pricesLoading}
+              balanceLabel="Your Balance"
+              onBack={closeCoin}
+              actions={coinActions}
+              shipsLog={<ShipsLogEntries entries={txEntries} isNoid={false} network={activeCoin} />}
+            />
+          </ScrollView>
+        ) : null}
+      </ScrollView>
+
+      {activeCoin && activeChain && (
+        <>
+          <SendModal
+            open={showSend}
+            onClose={() => setShowSend(false)}
+            chain={activeChain}
+            network={activeCoin}
+            fromAddress={coinAccount?.address ?? ""}
+            privateKey={coinAccount?.privateKey ?? ""}
+            balance={coinBalance}
+            usdPrice={prices?.[activeCoin]?.usd ?? 0}
+            onSent={() => void fetchAllBalances()}
+          />
+          <ReceiveModal
+            open={showReceive}
+            onClose={() => setShowReceive(false)}
+            mode="open"
+            address={coinAccount?.address ?? ""}
+          />
+          <ComingSoonToast
+            show={toast}
+            onDone={() => setToast(false)}
+            message="Buying is on the horizon. Coming soon."
+          />
+        </>
+      )}
     </View>
   );
 }
@@ -494,15 +493,12 @@ const TokenBar = memo(function TokenBar({
   balance,
   price,
   address,
-  crestRef,
   onPress,
 }: {
   chain: (typeof CHAINS)[number];
   balance: string;
   price?: { usd: number; change24h: number };
   address: string;
-  /** the crest is the flying element — the page above measures it by this ref */
-  crestRef: (v: View | null) => void;
   onPress: () => void;
 }) {
   const usdVal = (Number(balance) || 0) * (price?.usd ?? 0);
@@ -513,7 +509,7 @@ const TokenBar = memo(function TokenBar({
       onPress={onPress}
       style={({ pressed }) => [styles.bar, pressed && { transform: [{ scale: 0.99 }] }]}>
       <View style={styles.barLeft}>
-        <View ref={crestRef} collapsable={false} style={styles.crest}>
+        <View style={styles.crest}>
           <LinearGradient
             colors={["#6247A8", "#3B2570"]}
             start={{ x: 0.15, y: 0 }}
@@ -616,19 +612,14 @@ function BuyIcon() {
 
 const styles = StyleSheet.create({
   /* ── treasure card ── */
-  /* The card's SOLID BODY lives here, on the view that the reverse morph
-     transforms — not on the static parent. Android derives an elevation shadow
-     from a view's outline, which it only has when the view has a background, so
-     that background used to sit on the parent... where it stayed put while the
-     shell flew home, leaving a black card already in place with a second one
-     sailing towards it. It travels with the shell now. */
-  shellBay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
+  clip: { flex: 1, overflow: "hidden" },
+  pager: { flex: 1 },
+  cardBay: { paddingHorizontal: 16, paddingTop: 20 },
+  card: {
     borderRadius: CARD_RADIUS,
+    /* Android derives an elevation shadow from the view's OUTLINE, which it
+       only has when the view has a background — the gradient lives in a child
+       and does not count. Never visible: the shell covers it completely. */
     backgroundColor: "#2B1A55",
     elevation: 14,
     shadowColor: "#1E0E46",
@@ -636,10 +627,6 @@ const styles = StyleSheet.create({
     shadowRadius: 26,
     shadowOffset: { width: 0, height: 16 },
   },
-  /** Held back until the reverse-morph transform exists. */
-  preMorph: { opacity: 0 },
-  cardBay: { paddingHorizontal: 16, paddingTop: 20 },
-  card: { borderRadius: CARD_RADIUS },
   cardContent: { paddingHorizontal: 24, paddingVertical: 36 },
   treasureLabel: {
     fontFamily: FONT.roundBold,

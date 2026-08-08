@@ -3,16 +3,12 @@
  *
  * Ported from the extension's shared/CoinDetailView.tsx. The page background
  * follows the active mode while the graph card renders as its INVERSE — a dark
- * grid-lined card on the light page — so it reads as the home treasury card
- * having grown into the chart. That inversion is also what makes the shared
- * element morph work: the two cards are the same object, so watching one become
- * the other is legible rather than a swap.
+ * grid-lined card on the light page — so it reads as the same object as the home
+ * treasury card, seen on its own page.
  *
- * Two FLIP morphs run on mount (see lib/flip.ts):
- *   - the tapped token bar's crest flies up into the header chip
- *   - the home treasure card expands into the graph card's shell
- * and on the way out the graph card's rect is handed back so the dashboard can
- * grow its treasure card out of it — the exact reverse.
+ * It arrives as a PAGE, sliding in from the right beside the token list — see
+ * the header of modes/OpenModeView. It used to be a shared-element morph out of
+ * the treasure card; that is gone, and deliberately so.
  *
  * Live price + history come from CoinGecko (a mainnet proxy per testnet); the
  * `balance` is the real on-chain testnet amount, valued at the live price.
@@ -33,15 +29,6 @@ import Svg, { Path } from "react-native-svg";
 import type { ChainMeta } from "../../lib/chains";
 import type { ChartRange, PriceInfo } from "../../services/prices";
 import { useTokenChart } from "../../lib/usePrices";
-import {
-  flipTransform,
-  measureRect,
-  FLIP_CARD_EASING,
-  FLIP_CARD_MS,
-  FLIP_ICON_EASING,
-  FLIP_ICON_MS,
-  type Rect,
-} from "../../lib/flip";
 import LiveAreaChart from "./LiveAreaChart";
 import { FONT } from "../../theme/tokens";
 import { rgba, themeTokens } from "../../theme/useThemeTokens";
@@ -59,11 +46,6 @@ export interface CoinAction {
   onPress: () => void;
   /** muted = looks disabled (e.g. "Buy") but still fires onPress for a toast */
   tone?: "primary" | "muted";
-}
-
-export interface MorphSource {
-  card: Rect | null;
-  icon: Rect | null;
 }
 
 const RANGES: { key: ChartRange; label: string }[] = [
@@ -133,7 +115,6 @@ export default function CoinDetailView({
   price,
   priceLoading,
   balanceLabel = "Your Balance",
-  morph,
   onBack,
   actions,
   shipsLog,
@@ -146,9 +127,7 @@ export default function CoinDetailView({
   price?: PriceInfo;
   priceLoading?: boolean;
   balanceLabel?: string;
-  morph?: MorphSource | null;
-  /** receives the graph card's current rect so the list can reverse-morph */
-  onBack: (graphRect: Rect | null) => void;
+  onBack: () => void;
   actions: CoinAction[];
   shipsLog: React.ReactNode;
   children?: React.ReactNode;
@@ -158,9 +137,6 @@ export default function CoinDetailView({
   const [range, setRange] = useState<ChartRange>("7");
   const { points, loading: chartLoading } = useTokenChart(chain.id, range);
   const rangeIndex = RANGES.findIndex((r) => r.key === range);
-
-  const shellRef = useRef<View>(null);
-  const iconRef = useRef<View>(null);
 
   // ── Theme ────────────────────────────────────────────────────────────────
   // Derived from `pageTheme`, not the mode: "light" is reached from open's clear
@@ -191,82 +167,6 @@ export default function CoinDetailView({
   // deep green painted on a deep violet card.
   const changeColor = up ? cardTokens.up : cardTokens.down;
 
-  // ── Shared-element morph ─────────────────────────────────────────────────
-  const flip = useRef(new Animated.Value(1)).current;
-  const iconFlip = useRef(new Animated.Value(1)).current;
-  const [cardT, setCardT] = useState<ReturnType<typeof flipTransform>>(null);
-  const [iconT, setIconT] = useState<ReturnType<typeof flipTransform>>(null);
-
-  /* THE MORPHING ELEMENTS START INVISIBLE. Measuring "where it now is" needs a
-     layout pass, so the transform cannot exist on the first frame — and for that
-     one frame the graph card would paint at its FINAL size and place, before
-     snapping back to the treasure card to fly in. That read as two cards: one
-     already arrived, one still travelling. They are revealed in the same commit
-     that applies the transform, so the first thing you ever see is the card
-     sitting exactly on top of the one you tapped. */
-  const [cardHidden, setCardHidden] = useState(!!morph?.card);
-  const [iconHidden, setIconHidden] = useState(!!morph?.icon);
-
-  /* KICKED BY onLayout, NOT BY A TIMER. "Where it now is" only means anything
-     once the page has been laid out, and onLayout is the exact moment that
-     becomes true — a requestAnimationFrame is a guess that is sometimes early
-     (nothing to measure) and always at least one frame late. Those frames are
-     the whole gap between the tap and the card starting to move. */
-  const morphKicked = useRef(false);
-  const morphCancelled = useRef(false);
-  useEffect(() => () => { morphCancelled.current = true; }, []);
-
-  const startMorph = useCallback(() => {
-    if (morphKicked.current) return;
-    if (!morph?.card && !morph?.icon) return;
-    morphKicked.current = true;
-
-    void (async () => {
-      const [cardTo, iconTo] = await Promise.all([
-        measureRect(shellRef.current),
-        measureRect(iconRef.current),
-      ]);
-      if (morphCancelled.current) return;
-
-      const cardTr = morph.card && cardTo ? flipTransform(flip, morph.card, cardTo) : null;
-      const iconTr = morph.icon && iconTo ? flipTransform(iconFlip, morph.icon, iconTo) : null;
-
-      if (cardTr) flip.setValue(0);
-      if (iconTr) iconFlip.setValue(0);
-
-      // One commit: the transforms land and the elements become visible
-      // together, so neither is ever painted at rest before it has flown.
-      setCardT(cardTr);
-      setIconT(iconTr);
-      setCardHidden(false);
-      setIconHidden(false);
-
-      if (cardTr) {
-        Animated.timing(flip, {
-          toValue: 1,
-          duration: FLIP_CARD_MS,
-          easing: FLIP_CARD_EASING,
-          useNativeDriver: true,
-        }).start(() => !morphCancelled.current && setCardT(null));
-      }
-      if (iconTr) {
-        Animated.timing(iconFlip, {
-          toValue: 1,
-          duration: FLIP_ICON_MS,
-          easing: FLIP_ICON_EASING,
-          useNativeDriver: true,
-        }).start(() => !morphCancelled.current && setIconT(null));
-      }
-    })();
-    // One-shot: the morph is a handshake with the screen we came from.
-  }, [morph, flip, iconFlip]);
-
-  const handleBack = useCallback(() => {
-    void (async () => {
-      onBack(await measureRect(shellRef.current));
-    })();
-  }, [onBack]);
-
   // ── Header ───────────────────────────────────────────────────────────────
   const headIn = useRef(new Animated.Value(0)).current;
   useEffect(() => {
@@ -286,7 +186,7 @@ export default function CoinDetailView({
             transform: [{ translateY: headIn.interpolate({ inputRange: [0, 1], outputRange: [-6, 0] }) }],
           },
         ]}>
-        <Pressable onPress={handleBack} hitSlop={10}>
+        <Pressable onPress={onBack} hitSlop={10}>
           {({ pressed }) => (
             <View
               style={[
@@ -318,23 +218,7 @@ export default function CoinDetailView({
               {chain.subtitle.toUpperCase()} · {chain.symbol}
             </Text>
           </View>
-          <Animated.View
-            ref={iconRef}
-            collapsable={false}
-            style={[
-              styles.headChip,
-              iconHidden && styles.preMorph,
-              iconT
-                ? {
-                    transform: [
-                      { translateX: iconT.translateX },
-                      { translateY: iconT.translateY },
-                      { scaleX: iconT.scaleX },
-                      { scaleY: iconT.scaleY },
-                    ],
-                  }
-                : null,
-            ]}>
+          <View style={styles.headChip}>
             <LinearGradient
               colors={chipColors as unknown as readonly [string, string, ...string[]]}
               start={{ x: 0.15, y: 0 }}
@@ -344,30 +228,13 @@ export default function CoinDetailView({
             <View style={styles.glyph}>
               <chain.Icon size={22} color={chipInk} />
             </View>
-          </Animated.View>
+          </View>
         </View>
       </Animated.View>
 
       {/* ── Graph card (morph target) ── */}
       <View style={styles.cardBay}>
-        <Animated.View
-          ref={shellRef}
-          collapsable={false}
-          onLayout={startMorph}
-          style={[
-            styles.shell,
-            cardHidden && styles.preMorph,
-            cardT
-              ? {
-                  transform: [
-                    { translateX: cardT.translateX },
-                    { translateY: cardT.translateY },
-                    { scaleX: cardT.scaleX },
-                    { scaleY: cardT.scaleY },
-                  ],
-                }
-              : null,
-          ]}>
+        <View style={styles.shell}>
           <LinearGradient
             colors={cardColors as unknown as readonly [string, string, ...string[]]}
             locations={[0, 0.58, 1]}
@@ -375,9 +242,9 @@ export default function CoinDetailView({
             end={{ x: 0.85, y: 1 }}
             style={StyleSheet.absoluteFill}
           />
-        </Animated.View>
+        </View>
 
-        {/* content — never scaled, so the type stays crisp through the morph */}
+        {/* content */}
         <BlockIn delay={120} style={styles.cardContent}>
           <Text style={[styles.eyebrow, { color: rgba(cardInk, 0.4) }]}>PRICE</Text>
 
@@ -585,9 +452,6 @@ const styles = StyleSheet.create({
   headSub: { fontFamily: FONT.mono, fontSize: 8, letterSpacing: 1.6, marginTop: 3 },
   headChip: { height: 40, width: 40, borderRadius: 16, alignItems: "center", justifyContent: "center", overflow: "hidden" },
   glyph: { zIndex: 1 },
-
-  /** Held back until its FLIP transform exists — see the morph effect above. */
-  preMorph: { opacity: 0 },
 
   cardBay: { minHeight: 250, marginBottom: 16 },
   shell: {

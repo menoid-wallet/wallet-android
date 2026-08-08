@@ -182,12 +182,15 @@ const LogRow = memo(function LogRow({
           style={[
             styles.row,
             {
-              /* Opaque enough to sit ON the sky's cloud floor. At 50% the
-                 clouds read straight through the row, so the label and the
-                 amount looked like they were floating on the weather while
-                 their card was somewhere underneath it. */
-              backgroundColor: isNoid ? "rgba(43,26,85,0.82)" : "rgba(255,255,255,0.86)",
-              borderColor: isNoid ? "rgba(255,255,255,0.16)" : "rgba(255,255,255,0.9)",
+              /* The open-mode token bar's colour, but stated OUTRIGHT rather
+                 than mixed. A bar is rgba(255,255,255,0.55) over the sky, which
+                 lands on about #DCD0F6 — so that is the fill here, at an alpha
+                 with no room in it for the cloud floor to read through. Mixing
+                 it the bar's way instead is what made the log look like it was
+                 painted on the weather: the log sits over the cloud bank, not
+                 over open sky, so the same recipe comes out cloud-white. */
+              backgroundColor: isNoid ? "rgba(38,22,74,0.97)" : "rgba(220,208,246,0.97)",
+              borderColor: isNoid ? "rgba(255,255,255,0.16)" : "rgba(255,255,255,0.62)",
               transform: [{ scale: pressed ? 0.975 : 1 }],
             },
           ]}>
@@ -285,7 +288,9 @@ const styles = StyleSheet.create({
   empty: { fontFamily: FONT.body, fontSize: 11, fontStyle: "italic" },
   list: { gap: 6 },
 
-  row: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 14, borderWidth: 1 },
+  /* Padding and radius are the open-mode token bar's, so the two read as the
+     same component in two places. */
+  row: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 20, borderWidth: 1 },
   rowIcon: { height: 28, width: 28, borderRadius: 14, borderWidth: 1, alignItems: "center", justifyContent: "center" },
   rowIconText: { fontSize: 13 },
   rowText: { flex: 1, minWidth: 0 },
