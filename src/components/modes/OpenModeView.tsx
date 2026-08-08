@@ -85,10 +85,29 @@ const EMPTY_BALANCES: Record<NetworkId, string> = {
   aptos: "0",
 };
 
+/**
+ * THE OPEN COIN PAGE IS OWNED BY WalletHome, not by this view.
+ *
+ * It has to be, because the two modes share it: opening Monad in open mode and
+ * then switching to noid must land on Monad's private page — or, if that chain
+ * is not registered, on the register page. Keeping a private `activeCoin` in
+ * each view made the mode switch silently drop what you were looking at. Same
+ * lift the extension makes, for the same reason.
+ */
 export interface ModeViewProps {
-  /** Told whenever a coin page opens or closes, so the shell can route Back
-      and stop the mode pager from competing with the back-swipe. */
-  onCoinOpenChange: (open: boolean) => void;
+  activeCoin: NetworkId | null;
+  setActiveCoin: (c: NetworkId | null) => void;
+  /**
+   * Whether this is the mode currently on screen.
+   *
+   * BOTH mode views are mounted side by side in the shell's pager, and they
+   * share one `activeCoin` — so without this they BOTH react to it. Opening a
+   * coin in noid mode scrolled open mode's pager to a page it had not mounted,
+   * and closing it left that pager parked past the end of its content: the
+   * dashboard replaced by empty sky until you scrolled it back by hand.
+   * Only the visible mode follows the coin; the other one stays on its list.
+   */
+  isActive: boolean;
   /** Hands the shell a way to walk back — Android's Back must animate too. */
   registerClose: (close: () => void) => void;
 }
@@ -100,7 +119,7 @@ function formatAssetBalance(b: string): string {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 }
 
-export default function OpenModeView({ onCoinOpenChange, registerClose }: ModeViewProps) {
+export default function OpenModeView({ activeCoin, setActiveCoin, isActive, registerClose }: ModeViewProps) {
   const { wallet, treasureChain } = useWallet();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -109,7 +128,6 @@ export default function OpenModeView({ onCoinOpenChange, registerClose }: ModeVi
   const [balances, setBalances] = useState<Record<NetworkId, string>>(EMPTY_BALANCES);
   const mountedRef = useRef(true);
 
-  const [activeCoin, setActiveCoin] = useState<NetworkId | null>(null);
   const [txEntries, setTxEntries] = useState<TxEntry[]>([]);
   const [showSend, setShowSend] = useState(false);
   const [showReceive, setShowReceive] = useState(false);
@@ -232,7 +250,22 @@ export default function OpenModeView({ onCoinOpenChange, registerClose }: ModeVi
   const pendingOpen = useRef(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeRef = useRef<NetworkId | null>(null);
-  activeRef.current = activeCoin;
+  /** The coin THIS view should be showing — nothing, unless it is on screen. */
+  const shownCoin = isActive ? activeCoin : null;
+  /* Armed DURING RENDER rather than in an effect, because the coin can arrive
+     from outside (a mode switch carrying one over) and `onContentSizeChange`
+     can land before an effect would have run. */
+  if (shownCoin && activeRef.current !== shownCoin) pendingOpen.current = true;
+  activeRef.current = shownCoin;
+
+  /* Handing the coin to the other mode: park back on the list rather than
+     leaving the pager scrolled to a page that is about to unmount. */
+  useEffect(() => {
+    if (!shownCoin) {
+      pendingOpen.current = false;
+      pager.current?.scrollTo({ x: 0, animated: false });
+    }
+  }, [shownCoin]);
 
   const clearCloseTimer = () => {
     if (closeTimer.current) {
@@ -247,17 +280,15 @@ export default function OpenModeView({ onCoinOpenChange, registerClose }: ModeVi
     clearCloseTimer();
     if (activeRef.current === null) return;
     setActiveCoin(null);
-    onCoinOpenChange(false);
-  }, [onCoinOpenChange]);
+  }, [setActiveCoin]);
 
   const openCoin = useCallback(
     (id: NetworkId) => {
       clearCloseTimer();
       pendingOpen.current = true;
       setActiveCoin(id);
-      onCoinOpenChange(true);
     },
-    [onCoinOpenChange]
+    [setActiveCoin]
   );
 
   const closeCoin = useCallback(() => {
@@ -308,7 +339,7 @@ export default function OpenModeView({ onCoinOpenChange, registerClose }: ModeVi
   );
 
   // ── Coin page ─────────────────────────────────────────────────────────────
-  const activeChain = activeCoin ? CHAIN_BY_ID[activeCoin] : null;
+  const activeChain = shownCoin ? CHAIN_BY_ID[shownCoin] : null;
   const coinAccount = activeCoin ? accountFor(activeCoin) : undefined;
   const coinBalance = activeCoin ? balances[activeCoin] || "0" : "0";
   const coinActions: CoinAction[] = [
@@ -346,7 +377,7 @@ export default function OpenModeView({ onCoinOpenChange, registerClose }: ModeVi
         showsHorizontalScrollIndicator={false}
         /* Dead until a coin is open, so on the list the horizontal drag belongs
            to the mode pager above and nothing competes for it. */
-        scrollEnabled={activeCoin !== null}
+        scrollEnabled={shownCoin !== null}
         onContentSizeChange={onPagerContentSize}
         onMomentumScrollEnd={(e) => onSettled(e.nativeEvent.contentOffset.x)}
         onScrollEndDrag={(e) => onSettled(e.nativeEvent.contentOffset.x)}
@@ -437,7 +468,7 @@ export default function OpenModeView({ onCoinOpenChange, registerClose }: ModeVi
             slid home rather than before it, so the way back is never a slide
             over an empty half. A fresh mount each time is also why it always
             opens scrolled to the top. */}
-        {activeCoin && activeChain ? (
+        {shownCoin && activeChain ? (
           <ScrollView
             style={{ width }}
             contentContainerStyle={{ paddingBottom: bottomPad }}
@@ -446,28 +477,28 @@ export default function OpenModeView({ onCoinOpenChange, registerClose }: ModeVi
               chain={activeChain}
               pageTheme="light"
               balance={coinBalance}
-              price={prices?.[activeCoin]}
+              price={prices?.[shownCoin]}
               priceLoading={pricesLoading}
               balanceLabel="Your Balance"
               onBack={closeCoin}
               actions={coinActions}
-              shipsLog={<ShipsLogEntries entries={txEntries} isNoid={false} network={activeCoin} />}
+              shipsLog={<ShipsLogEntries entries={txEntries} isNoid={false} network={shownCoin} />}
             />
           </ScrollView>
         ) : null}
       </ScrollView>
 
-      {activeCoin && activeChain && (
+      {shownCoin && activeChain && (
         <>
           <SendModal
             open={showSend}
             onClose={() => setShowSend(false)}
             chain={activeChain}
-            network={activeCoin}
+            network={shownCoin}
             fromAddress={coinAccount?.address ?? ""}
             privateKey={coinAccount?.privateKey ?? ""}
             balance={coinBalance}
-            usdPrice={prices?.[activeCoin]?.usd ?? 0}
+            usdPrice={prices?.[shownCoin]?.usd ?? 0}
             onSent={() => void fetchAllBalances()}
           />
           <ReceiveModal

@@ -37,6 +37,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import Svg, { Path } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWallet, type WalletMode } from "../context/WalletContext";
+import type { NetworkId } from "../lib/networks";
 import { useBackHandler } from "../lib/useBackHandler";
 import { modeMix, onModeScroll, setModeWidth } from "../lib/modeMotion";
 import AnimatedLogo from "./brand/AnimatedLogo";
@@ -82,13 +83,20 @@ export default function WalletHome({
 
   const [tab, setTab] = useState<Tab>("wallet");
   const [accountsOpen, setAccountsOpen] = useState(false);
-  /* The coin page lives inside OpenModeView now (it is a page of that view's
-     own slide). All this level needs to know is whether one is open — to route
-     Back into it, and to stop the mode pager competing with its back-swipe. */
-  const [coinOpen, setCoinOpen] = useState(false);
-  const closeCoin = useRef<() => void>(() => {});
-  const registerClose = useCallback((fn: () => void) => {
-    closeCoin.current = fn;
+  /* THE COIN PAGE IS SHARED BY BOTH MODES and therefore lives here.
+     Open Monad in open mode, switch to noid, and you should land on Monad's
+     private page — or on the register page if that chain is not bound yet.
+     Neither is possible if each view keeps its own `activeCoin`. Each mode
+     still owns its own PAGER; this is only which coin they are showing. */
+  const [activeCoin, setActiveCoin] = useState<NetworkId | null>(null);
+  const coinOpen = activeCoin !== null;
+  const closeOpenCoin = useRef<() => void>(() => {});
+  const closeNoidCoin = useRef<() => void>(() => {});
+  const registerOpenClose = useCallback((fn: () => void) => {
+    closeOpenCoin.current = fn;
+  }, []);
+  const registerNoidClose = useCallback((fn: () => void) => {
+    closeNoidCoin.current = fn;
   }, []);
 
   const isNoid = mode === "noid";
@@ -139,10 +147,10 @@ export default function WalletHome({
   useBackHandler(
     useCallback(() => {
       if (accountsOpen) { setAccountsOpen(false); return true; }
-      if (coinOpen) { closeCoin.current(); return true; }
+      if (coinOpen) { (isNoid ? closeNoidCoin : closeOpenCoin).current(); return true; }
       if (settingsOpen) { setTab("wallet"); return true; }
       return false; // home, nothing stacked — let Android leave the app
-    }, [accountsOpen, coinOpen, settingsOpen])
+    }, [accountsOpen, coinOpen, settingsOpen, isNoid])
   );
 
   /* ── Arrival ──
@@ -271,15 +279,22 @@ export default function WalletHome({
           {/* OpenModeView owns its own scrolling: it is two pages on a slide,
               and each needs to scroll on its own. */}
           <View style={{ width }}>
-            <OpenModeView onCoinOpenChange={setCoinOpen} registerClose={registerClose} />
+            <OpenModeView
+              activeCoin={activeCoin}
+              setActiveCoin={setActiveCoin}
+              isActive={!isNoid}
+              registerClose={registerOpenClose}
+            />
           </View>
 
-          <ScrollView
-            style={{ width }}
-            contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
-            showsVerticalScrollIndicator={false}>
-            <NoidModeView />
-          </ScrollView>
+          <View style={{ width }}>
+            <NoidModeView
+              activeCoin={activeCoin}
+              setActiveCoin={setActiveCoin}
+              isActive={isNoid}
+              registerClose={registerNoidClose}
+            />
+          </View>
         </Animated.ScrollView>
       )}
 

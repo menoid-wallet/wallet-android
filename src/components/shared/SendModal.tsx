@@ -41,9 +41,10 @@ import {
 import { ethers, isAddress } from "ethers";
 import Svg, { Path } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useWallet } from "../../context/WalletContext";
 import { explorerTxUrl, sendNative } from "../../lib/rpc";
 import { NETWORKS, type NetworkId } from "../../lib/networks";
-import { recentRecipients, saveOpenTx, updateOpenTx } from "../../lib/txStore";
+import { hydrateAddressBook, recentRecipients, saveOpenTx, updateOpenTx } from "../../lib/txStore";
 import { useKeyboardHeight } from "../../lib/useKeyboardHeight";
 import type { ChainMeta } from "../../lib/chains";
 import AnimatedLogo from "../brand/AnimatedLogo";
@@ -141,10 +142,25 @@ export default memo(function SendModal({
     return () => clearTimeout(t);
   }, [open]);
 
-  const recents = useMemo(
-    () => (open ? recentRecipients(fromAddress) : []),
-    [open, fromAddress]
-  );
+  /* The address book spans every account, not just the one you are sending
+     from — see txStore.recentRecipients. The logs have to be pulled off disk
+     before they can be scanned, so opening the sheet loads them and the list is
+     recomputed when they land. */
+  const { entries } = useWallet();
+  const [bookTick, setBookTick] = useState(0);
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    const senders = entries.flatMap((e) =>
+      [e.openAddress, e.solanaAddress, e.suiAddress, e.aptosAddress].filter(Boolean) as string[]
+    );
+    void hydrateAddressBook(senders).then(() => alive && setBookTick((n) => n + 1));
+    return () => {
+      alive = false;
+    };
+  }, [open, entries]);
+
+  const recents = useMemo(() => (open ? recentRecipients() : []), [open, bookTick]);
 
   const addrOk = useMemo(() => isValidAddressForChain(to, network), [to, network]);
 
@@ -458,7 +474,10 @@ function ToStage({
           rides up with the keyboard — so Next always sits on top of it. */}
       {/* Clear of the keyboard when it is up, clear of the gesture bar when it
           is not — and in both cases not jammed against the edge. */}
-      <View style={[styles.paneFooter, { paddingBottom: keyboardUp ? 30 : bottomInset + 34 }]}>
+      {/* 30 left the cloud's lower lobes sitting ON the keys — a CloudChip
+          overflows its content box by about half its lobe, and the pane ends
+          exactly at the keyboard. */}
+      <View style={[styles.paneFooter, { paddingBottom: keyboardUp ? 84 : bottomInset + 34 }]}>
         <CloudChip
           tone="violet"
           onPress={onNext}

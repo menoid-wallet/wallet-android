@@ -1,30 +1,681 @@
 /**
- * NoidModeView.tsx — the private treasury. Placeholder for this milestone.
+ * NoidModeView.tsx — the shadow waters.
  *
- * The extension's noid mode is the whole shielded side of the wallet: the
- * Menoid-derived keys, the masked balances, the pool. None of that is ported
- * yet, so this stands in — but it stands in ON THE NOID SKY, because the mode
- * toggle's promise is the weather changing, and a toggle that flips to a
- * placeholder painted in open-mode colours would read as a bug rather than as
- * an unfinished section.
+ * Ported from the extension's components/modes/NoidModeView.tsx: the colour
+ * INVERSE of open mode. Dark page, LIGHT treasure card, dark-glass token bars.
+ * Same geometry as open mode throughout, deliberately — the two cards have to
+ * cross-fade into each other on a mode switch rather than read as two unrelated
+ * screens — with the two ends of the palette swapped.
+ *
+ * The balances are the private ones from PoolContext (notes decrypted out of
+ * the pool), NOT chain balances. Everything else about the page is open mode.
+ *
+ * THREE GATES, all on registration, and they are the fiddly part:
+ *   1. nothing registered at all → the register page instead of the dashboard
+ *   2. some chains registered → the dashboard, and every unregistered chain's
+ *      bar carries a Register button where its balance would be
+ *   3. a coin page carried in from open mode on a chain that is not registered
+ *      here → drop it and open the register page, because there is nothing on
+ *      that page the user could do
+ *
+ * The coin page's Mask / Unmask / Transfer are placeholders for now.
  */
 
-import React from "react";
-import { View, StyleSheet } from "react-native";
-import UnderDevPanel from "../shared/UnderDevPanel";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Animated,
+  Easing,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import Svg, { Path } from "react-native-svg";
+import { useWallet } from "../../context/WalletContext";
+import { usePool } from "../../context/PoolContext";
+import { CHAINS, CHAIN_BY_ID } from "../../lib/chains";
+import { type NetworkId } from "../../lib/networks";
+import { getRegisteredChains } from "../../lib/registration";
+import { useTokenPrices } from "../../lib/usePrices";
+import AnimatedNumber from "../shared/AnimatedNumber";
+import InlineCopyButton from "../shared/InlineCopyButton";
+import CopyKeysButton from "../shared/CopyKeysButton";
+import TreasureCardShell, { CARD_RADIUS } from "../shared/TreasureCardShell";
+import CoinDetailView, { type CoinAction } from "../shared/CoinDetailView";
+import ShipsLogEntries from "../shared/ShipsLogEntries";
+import UnderDevSheet from "../shared/UnderDevSheet";
+import RegisterView from "./RegisterView";
+import type { ModeViewProps } from "./OpenModeView";
+import { FONT } from "../../theme/tokens";
 
-export default function NoidModeView() {
+const INK = "#F4EEFF";
+const INK_RGB = "244,238,255";
+const SLIDE_MS = 380;
+
+/** The REAL (open-mode) address for a chain — the register map is keyed by it. */
+function realAddressFor(wallet: any, id: NetworkId): string | undefined {
+  if (id === "solana") return wallet?.solanaAccount?.address;
+  if (id === "sui") return wallet?.suiAccount?.address;
+  if (id === "aptos") return wallet?.aptosAccount?.address;
+  return wallet?.normalAccount?.address;
+}
+
+function formatAssetBalance(b: string): string {
+  const n = Number(b);
+  if (!Number.isFinite(n) || n === 0) return "0.00";
+  if (n < 0.01) return n.toFixed(4);
+  return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+}
+
+export default function NoidModeView({ activeCoin, setActiveCoin, isActive, registerClose }: ModeViewProps) {
+  const { wallet, treasureChain } = useWallet();
+  const { allBalances } = usePool();
+  const { prices, loading: pricesLoading } = useTokenPrices();
+  const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+
+  const [sheet, setSheet] = useState<null | "mask" | "unmask" | "transfer">(null);
+
+  // ── Registration ────────────────────────────────────────────────────────
+  const [registered, setRegistered] = useState<Set<NetworkId>>(new Set());
+  const [regLoaded, setRegLoaded] = useState(false);
+  /* Forced open by the per-chain Register buttons, so the page is reachable
+     even once some other chain has been registered. */
+  const [forceRegister, setForceRegister] = useState(false);
+
+  const loadRegistered = useCallback(async () => {
+    if (!wallet) {
+      setRegistered(new Set());
+      setRegLoaded(true);
+      return;
+    }
+    const found = new Set<NetworkId>();
+    for (const c of CHAINS) {
+      const addr = realAddressFor(wallet, c.id);
+      if (!addr) continue;
+      if ((await getRegisteredChains(addr)).includes(c.id)) found.add(c.id);
+    }
+    setRegistered(found);
+    setRegLoaded(true);
+  }, [wallet]);
+
+  useEffect(() => {
+    void loadRegistered();
+  }, [loadRegistered]);
+
+  const unregisteredIds = useMemo(
+    () => CHAINS.map((c) => c.id).filter((id) => !registered.has(id)),
+    [registered]
+  );
+
+  const addresses = useMemo(
+    () => ({
+      evm: wallet?.normalAccount?.address ?? "",
+      solana: wallet?.solanaAccount?.address ?? "",
+      sui: wallet?.suiAccount?.address ?? "",
+      aptos: wallet?.aptosAccount?.address ?? "",
+    }),
+    [wallet]
+  );
+
+  // ── The pager (same machinery as open mode) ─────────────────────────────
+  const pager = useRef<ScrollView>(null);
+  const pendingOpen = useRef(false);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeRef = useRef<NetworkId | null>(null);
+  /** The coin THIS view should be showing — nothing, unless it is on screen. */
+  const shownCoin = isActive ? activeCoin : null;
+  /* Armed DURING RENDER rather than in an effect, because the coin can arrive
+     from outside (a mode switch carrying one over) and `onContentSizeChange`
+     can land before an effect would have run. */
+  if (shownCoin && activeRef.current !== shownCoin) pendingOpen.current = true;
+  activeRef.current = shownCoin;
+
+  /* Handing the coin to the other mode: park back on the list rather than
+     leaving the pager scrolled to a page that is about to unmount. */
+  useEffect(() => {
+    if (!shownCoin) {
+      pendingOpen.current = false;
+      pager.current?.scrollTo({ x: 0, animated: false });
+    }
+  }, [shownCoin]);
+
+  const clearCloseTimer = () => {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  };
+
+  const finishClose = useCallback(() => {
+    clearCloseTimer();
+    if (activeRef.current === null) return;
+    setActiveCoin(null);
+  }, [setActiveCoin]);
+
+  const closeCoin = useCallback(() => {
+    if (activeRef.current === null) return;
+    pendingOpen.current = false;
+    pager.current?.scrollTo({ x: 0, animated: true });
+    clearCloseTimer();
+    closeTimer.current = setTimeout(finishClose, SLIDE_MS + 200);
+  }, [finishClose]);
+
+  useEffect(() => registerClose(closeCoin), [registerClose, closeCoin]);
+  useEffect(() => clearCloseTimer, []);
+
+  const openCoin = useCallback(
+    (id: NetworkId) => {
+      /* Gate 3, at the door: a coin page in noid mode only exists once the
+         chain is bound. Every path in (bar tap, featured shortcut, a coin
+         carried over from open mode) lands here. */
+      if (!registered.has(id)) {
+        setForceRegister(true);
+        return;
+      }
+      clearCloseTimer();
+      pendingOpen.current = true;
+      setActiveCoin(id);
+    },
+    [registered, setActiveCoin]
+  );
+
+  const onPagerContentSize = useCallback(
+    (w: number) => {
+      if (pendingOpen.current && w > width * 1.5) {
+        pendingOpen.current = false;
+        pager.current?.scrollTo({ x: width, animated: true });
+      }
+    },
+    [width]
+  );
+
+  const onSettled = useCallback((x: number) => {
+    if (x <= 1) finishClose();
+  }, [finishClose]);
+
+  /* A coin carried in from open mode on a chain we are not registered on has
+     nowhere to go — drop it and offer the register page instead. */
+  useEffect(() => {
+    if (isActive && activeCoin && regLoaded && !registered.has(activeCoin)) {
+      setActiveCoin(null);
+      setForceRegister(true);
+    }
+  }, [isActive, activeCoin, regLoaded, registered, setActiveCoin]);
+
+  const enter = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(enter, {
+      toValue: 1,
+      duration: 600,
+      easing: Easing.bezier(0.34, 1.56, 0.64, 1),
+      useNativeDriver: true,
+    }).start();
+  }, [enter]);
+
+  const totalUsd = useMemo(() => {
+    let total = 0;
+    for (const c of CHAINS) total += (Number(allBalances[c.id]) || 0) * (prices?.[c.id]?.usd ?? 0);
+    return total;
+  }, [allBalances, prices]);
+
+  const formattedTotalUsd = useMemo(
+    () =>
+      totalUsd.toLocaleString("en-US", {
+        style: "currency",
+        currency: "USD",
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }),
+    [totalUsd]
+  );
+
+  // Gates 1 and 2.
+  if (regLoaded && (registered.size === 0 || forceRegister)) {
+    return (
+      <RegisterView
+        chainsToShow={registered.size === 0 ? undefined : unregisteredIds}
+        onDone={() => {
+          setForceRegister(false);
+          void loadRegistered();
+        }}
+      />
+    );
+  }
+
+  const activeChain = shownCoin ? CHAIN_BY_ID[shownCoin] : null;
+  const coinBalance = shownCoin ? allBalances[shownCoin] || "0" : "0";
+  const coinActions: CoinAction[] = [
+    { key: "mask", icon: <MaskIcon />, label: "Mask", onPress: () => setSheet("mask") },
+    { key: "unmask", icon: <UnmaskIcon />, label: "Unmask", onPress: () => setSheet("unmask") },
+    { key: "transfer", icon: <TransferIcon />, label: "Transfer", onPress: () => setSheet("transfer") },
+  ];
+
+  const bottomPad = insets.bottom + 24;
+
+  const featured = treasureChain === "all" ? null : treasureChain;
+  const featuredChain = featured ? CHAIN_BY_ID[featured] : null;
+  const featuredBalRaw = featured ? allBalances[featured] || "0" : "0";
+  const featuredUsd = featured ? (Number(featuredBalRaw) || 0) * (prices?.[featured]?.usd ?? 0) : 0;
+  const featuredUsdFormatted = featuredUsd.toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: featuredUsd > 0 && featuredUsd < 1 ? 4 : 2,
+  });
+  const tokenList = featured ? CHAINS.filter((c) => c.id !== featured) : CHAINS;
+
   return (
-    <View style={styles.wrap}>
-      <UnderDevPanel
+    <View style={styles.clip}>
+      <ScrollView
+        ref={pager}
+        horizontal
+        pagingEnabled
+        bounces={false}
+        overScrollMode="never"
+        showsHorizontalScrollIndicator={false}
+        scrollEnabled={shownCoin !== null}
+        onContentSizeChange={onPagerContentSize}
+        onMomentumScrollEnd={(e) => onSettled(e.nativeEvent.contentOffset.x)}
+        onScrollEndDrag={(e) => onSettled(e.nativeEvent.contentOffset.x)}
+        style={styles.pager}>
+        {/* ── page 0 · the list ── */}
+        <ScrollView
+          style={{ width }}
+          contentContainerStyle={{ paddingBottom: bottomPad }}
+          showsVerticalScrollIndicator={false}>
+          <Animated.View
+            style={[
+              styles.cardBay,
+              {
+                opacity: enter,
+                transform: [
+                  { translateY: enter.interpolate({ inputRange: [0, 1], outputRange: [18, 0] }) },
+                  { scale: enter.interpolate({ inputRange: [0, 1], outputRange: [0.97, 1] }) },
+                ],
+              },
+            ]}>
+            <View style={styles.card}>
+              <TreasureCardShell isNoid treasureChain={treasureChain} />
+
+              <View style={styles.cardContent}>
+                <Text style={styles.treasureLabel}>HIDDEN TREASURE</Text>
+
+                {featuredChain ? (
+                  <View style={styles.balanceBlock}>
+                    <View style={styles.featuredRow}>
+                      <AnimatedNumber
+                        value={formatAssetBalance(featuredBalRaw)}
+                        height={48}
+                        duration={850}
+                        textStyle={styles.featuredNumber}
+                      />
+                      <Text style={styles.featuredSymbol}>{featuredChain.symbol}</Text>
+                    </View>
+                    <Text style={styles.featuredUsd}>≈ {featuredUsdFormatted}</Text>
+                    <Text style={styles.featuredTotal}>
+                      Total balance:{" "}
+                      <Text style={styles.featuredTotalValue}>{formattedTotalUsd}</Text>
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={styles.balanceBlock}>
+                    <AnimatedNumber
+                      value={formattedTotalUsd}
+                      height={62}
+                      duration={850}
+                      textStyle={styles.totalNumber}
+                    />
+                  </View>
+                )}
+
+                <CopyKeysButton addresses={addresses} isNoid />
+              </View>
+            </View>
+          </Animated.View>
+
+          <View style={styles.tokensHeader}>
+            <Text style={styles.tokensLabel}>TOKENS</Text>
+            <LinearGradient
+              colors={["rgba(255,255,255,0.28)", "rgba(255,255,255,0)"]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={styles.tokensRule}
+            />
+          </View>
+
+          <View style={styles.bars}>
+            {tokenList.map((chain) => (
+              <TokenBar
+                key={chain.id}
+                chain={chain}
+                balance={allBalances[chain.id] || "0"}
+                price={prices?.[chain.id]}
+                address={realAddressFor(wallet, chain.id) ?? ""}
+                registered={registered.has(chain.id)}
+                onPress={() => openCoin(chain.id)}
+                onRegister={() => setForceRegister(true)}
+              />
+            ))}
+          </View>
+
+          <View style={styles.tail} />
+        </ScrollView>
+
+        {/* ── page 1 · the coin ── */}
+        {shownCoin && activeChain ? (
+          <ScrollView
+            style={{ width }}
+            contentContainerStyle={{ paddingBottom: bottomPad }}
+            showsVerticalScrollIndicator={false}>
+            <CoinDetailView
+              chain={activeChain}
+              pageTheme="dark"
+              balance={coinBalance}
+              price={prices?.[shownCoin]}
+              priceLoading={pricesLoading}
+              balanceLabel="Your Private Balance"
+              onBack={closeCoin}
+              actions={coinActions}
+              shipsLog={<ShipsLogEntries entries={[]} isNoid network={shownCoin} />}
+            />
+          </ScrollView>
+        ) : null}
+      </ScrollView>
+
+      <UnderDevSheet
+        open={sheet !== null}
+        onClose={() => setSheet(null)}
         isNoid
-        label="Noid mode"
-        caption="Your shielded balances, private sends and the Menoid pool are being built. Open mode is live."
+        title={sheet === "mask" ? "Mask" : sheet === "unmask" ? "Unmask" : "Transfer"}
+        caption={
+          sheet === "mask"
+            ? "Moving funds from your public balance into the private pool is being built."
+            : sheet === "unmask"
+              ? "Bringing private funds back out to your public balance is being built."
+              : "Private transfers between Menoid wallets are being built."
+        }
       />
     </View>
   );
 }
 
+/* ───────────────────────── Token bar ─────────────────────────
+   Same bar for registered and unregistered chains — solid glass, full-colour
+   crest, full name. Only the right-hand control differs: a balance, or a
+   Register button. A dimmed or ghosted row would read as broken. */
+const TokenBar = memo(function TokenBar({
+  chain,
+  balance,
+  price,
+  address,
+  registered,
+  onPress,
+  onRegister,
+}: {
+  chain: (typeof CHAINS)[number];
+  balance: string;
+  price?: { usd: number; change24h: number };
+  address: string;
+  registered: boolean;
+  onPress: () => void;
+  onRegister: () => void;
+}) {
+  const usdVal = (Number(balance) || 0) * (price?.usd ?? 0);
+  const up = (price?.change24h ?? 0) >= 0;
+
+  const crest = (
+    <View style={styles.crest}>
+      <LinearGradient
+        colors={["#FBF7FF", "#D6C4F5"]}
+        start={{ x: 0.15, y: 0 }}
+        end={{ x: 0.85, y: 1 }}
+        style={[StyleSheet.absoluteFill, { borderRadius: 12 }]}
+      />
+      <View style={styles.glyph}>
+        <chain.Icon size={20} color="#3B2570" />
+      </View>
+    </View>
+  );
+
+  if (!registered) {
+    return (
+      <View style={styles.bar}>
+        <View style={styles.barLeft}>
+          {crest}
+          <View>
+            <Text style={styles.barName}>{chain.name}</Text>
+            <Text style={styles.barSubtitle}>{chain.subtitle.toUpperCase()}</Text>
+          </View>
+        </View>
+        <Pressable
+          onPress={onRegister}
+          style={({ pressed }) => [styles.regBtn, { transform: [{ scale: pressed ? 0.95 : 1 }] }]}>
+          <LinearGradient
+            colors={["#F4EEFF", "#C9B0FF"]}
+            start={{ x: 0.15, y: 0 }}
+            end={{ x: 0.85, y: 1 }}
+            style={[StyleSheet.absoluteFill, { borderRadius: 999 }]}
+          />
+          <Text style={styles.regText}>REGISTER</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.bar, pressed && { transform: [{ scale: 0.99 }] }]}>
+      <View style={styles.barLeft}>
+        {crest}
+        <View>
+          <View style={styles.barNameRow}>
+            <Text style={styles.barName}>{chain.name}</Text>
+            <InlineCopyButton value={address} fg={INK_RGB} />
+          </View>
+          <Text style={styles.barSubtitle}>{chain.subtitle.toUpperCase()}</Text>
+        </View>
+      </View>
+
+      <View style={styles.barRight}>
+        <View style={styles.barFigures}>
+          <View style={styles.barAmountRow}>
+            <AnimatedNumber
+              value={formatAssetBalance(balance)}
+              height={15}
+              duration={650}
+              textStyle={styles.barAmount}
+            />
+            <Text style={styles.barSymbol}>{chain.symbol}</Text>
+          </View>
+          <Text
+            style={[
+              styles.barUsd,
+              { color: usdVal > 0 ? (up ? "#6EE7A8" : "#FF8E86") : `rgba(${INK_RGB},0.5)` },
+            ]}>
+            {usdVal > 0
+              ? `≈ ${usdVal.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: usdVal < 1 ? 4 : 2 })}`
+              : "—"}
+          </Text>
+        </View>
+        <Svg width={7} height={7} viewBox="0 0 10 10">
+          <Path
+            d="M3 1.5L6.5 5L3 8.5"
+            stroke={`rgba(${INK_RGB},0.35)`}
+            strokeWidth={1.6}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            fill="none"
+          />
+        </Svg>
+      </View>
+    </Pressable>
+  );
+});
+
+/* ─── action glyphs ─── */
+function MaskIcon() {
+  return (
+    <Svg width={15} height={15} viewBox="0 0 18 18">
+      <Path
+        d="M9 2L15 4.2V8.5C15 12 12.4 14.7 9 16C5.6 14.7 3 12 3 8.5V4.2L9 2Z"
+        stroke={`rgba(${INK_RGB},0.95)`}
+        strokeWidth={1.4}
+        strokeLinejoin="round"
+        fill="none"
+      />
+      <Path
+        d="M6.4 9L8.2 10.8L11.8 7"
+        stroke={`rgba(${INK_RGB},0.95)`}
+        strokeWidth={1.4}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </Svg>
+  );
+}
+function UnmaskIcon() {
+  return (
+    <Svg width={15} height={15} viewBox="0 0 18 18">
+      <Path
+        d="M2 9C2 9 4.7 4.5 9 4.5C13.3 4.5 16 9 16 9C16 9 13.3 13.5 9 13.5C4.7 13.5 2 9 2 9Z"
+        stroke={`rgba(${INK_RGB},0.95)`}
+        strokeWidth={1.4}
+        strokeLinejoin="round"
+        fill="none"
+      />
+      <Path
+        d="M11.1 9A2.1 2.1 0 1 1 6.9 9a2.1 2.1 0 0 1 4.2 0Z"
+        stroke={`rgba(${INK_RGB},0.95)`}
+        strokeWidth={1.4}
+        fill="none"
+      />
+    </Svg>
+  );
+}
+function TransferIcon() {
+  return (
+    <Svg width={15} height={15} viewBox="0 0 18 18">
+      <Path
+        d="M3 6.5H14M14 6.5L11 3.5M3 11.5H14M3 11.5L6 8.5"
+        stroke={`rgba(${INK_RGB},0.95)`}
+        strokeWidth={1.5}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </Svg>
+  );
+}
+
 const styles = StyleSheet.create({
-  wrap: { paddingTop: 12 },
+  clip: { flex: 1, overflow: "hidden" },
+  pager: { flex: 1 },
+  cardBay: { paddingHorizontal: 16, paddingTop: 20 },
+  card: {
+    borderRadius: CARD_RADIUS,
+    /* The light card's own outline for Android's elevation, same trick as open
+       mode's — never visible, the shell covers it. */
+    backgroundColor: "#EADFFC",
+    elevation: 14,
+    shadowColor: "#0C061E",
+    shadowOpacity: 0.6,
+    shadowRadius: 28,
+    shadowOffset: { width: 0, height: 18 },
+  },
+  cardContent: { paddingHorizontal: 24, paddingVertical: 36 },
+  treasureLabel: {
+    fontFamily: FONT.roundBold,
+    fontSize: 8,
+    letterSpacing: 4,
+    color: "rgba(78,47,142,0.55)",
+    marginBottom: 14,
+  },
+  balanceBlock: { marginBottom: 24 },
+  totalNumber: { fontFamily: FONT.roundBold, fontSize: 62, letterSpacing: -1.8, color: "#3B2570" },
+  featuredRow: { flexDirection: "row", alignItems: "flex-end", gap: 8 },
+  featuredNumber: { fontFamily: FONT.roundBold, fontSize: 48, letterSpacing: -1.4, color: "#3B2570" },
+  featuredSymbol: {
+    fontFamily: FONT.roundBold,
+    fontSize: 18,
+    color: "rgba(78,47,142,0.6)",
+    marginBottom: 6,
+  },
+  featuredUsd: { fontFamily: FONT.mono, fontSize: 12, color: "rgba(78,47,142,0.6)", marginTop: 8 },
+  featuredTotal: { fontFamily: FONT.body, fontSize: 10, color: "rgba(78,47,142,0.55)", marginTop: 2 },
+  featuredTotalValue: { fontFamily: FONT.bodySemi, color: "rgba(78,47,142,0.8)" },
+
+  tokensHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 20,
+    marginTop: 24,
+    marginBottom: 10,
+  },
+  tokensLabel: {
+    fontFamily: FONT.roundBold,
+    fontSize: 9,
+    letterSpacing: 3.6,
+    color: `rgba(${INK_RGB},0.55)`,
+  },
+  tokensRule: { flex: 1, height: 1 },
+
+  bars: { paddingHorizontal: 16, gap: 8 },
+  bar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.11)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+  },
+  glyph: { zIndex: 1 },
+  barLeft: { flexDirection: "row", alignItems: "center", gap: 12, flexShrink: 1 },
+  crest: {
+    height: 36,
+    width: 36,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(78,47,142,0.14)",
+  },
+  barNameRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  barName: { fontFamily: FONT.roundSemi, fontSize: 12.5, color: `rgba(${INK_RGB},0.9)` },
+  barSubtitle: {
+    fontFamily: FONT.mono,
+    fontSize: 9,
+    color: `rgba(${INK_RGB},0.55)`,
+    letterSpacing: 0.8,
+    marginTop: 2,
+  },
+  barRight: { flexDirection: "row", alignItems: "center", gap: 10 },
+  barFigures: { alignItems: "flex-end" },
+  barAmountRow: { flexDirection: "row", alignItems: "flex-end", gap: 4 },
+  barAmount: { fontFamily: FONT.roundBold, fontSize: 12.5, color: `rgba(${INK_RGB},0.9)` },
+  barSymbol: { fontFamily: FONT.body, fontSize: 9, color: `rgba(${INK_RGB},0.55)`, marginBottom: 1 },
+  barUsd: { fontFamily: FONT.mono, fontSize: 9, marginTop: 2 },
+
+  regBtn: {
+    paddingHorizontal: 15,
+    paddingVertical: 7,
+    borderRadius: 999,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  regText: { fontFamily: FONT.roundBold, fontSize: 9, letterSpacing: 1.4, color: "#3B2570" },
+
+  tail: { height: 34 },
 });

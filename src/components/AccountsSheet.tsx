@@ -47,8 +47,33 @@ import { rgba, themeTokens } from "../theme/useThemeTokens";
 
 /* The sheet needs an OPAQUE base: it floats above the app's backdrop, so the
    sky is not behind it and glass alone would show the dimmed screen through the
-   copy. These are the two skies' flat mid tones. */
-const SHEET_BASE = { open: "#C8B0EE", noid: "#2A1A52" };
+   copy.
+   OPEN MODE BORROWS THE SEND SHEET'S SURFACE — the same cream gradient, border
+   and handle as LiquidSheet's "cream" tone. It used to be the sky's flat mid
+   lilac (#C8B0EE), which is the one colour on the page that is neither the sky
+   nor a card: it read as a grey slab. Two sheets in the same wallet should be
+   made of the same material. Noid keeps its own deep violet, untouched. */
+const SURFACE = {
+  open: {
+    fill: ["#F7F2FF", "#ECE0FC", "#DCCDF7"] as const,
+    border: "rgba(78,47,142,0.16)",
+    grabber: "rgba(78,47,142,0.25)",
+    /* Glass tuned for cream. `t.glass` is white-on-sky and simply vanishes here. */
+    cardFill: "rgba(78,47,142,0.05)",
+    cardLine: "rgba(78,47,142,0.12)",
+    chipFill: "rgba(78,47,142,0.06)",
+    chipLine: "rgba(78,47,142,0.14)",
+  },
+  noid: {
+    fill: ["#2A1A52", "#2A1A52", "#2A1A52"] as const,
+    border: "rgba(255,255,255,0.18)",
+    grabber: "rgba(244,238,255,0.24)",
+    cardFill: "rgba(255,255,255,0.10)",
+    cardLine: "rgba(255,255,255,0.18)",
+    chipFill: "rgba(255,255,255,0.10)",
+    chipLine: "rgba(255,255,255,0.18)",
+  },
+};
 
 const SHEET_PAD = 16;
 const CARD_GAP = 10;
@@ -76,6 +101,7 @@ export default memo(function AccountsSheet({
   const insets = useSafeAreaInsets();
   const { height, width } = useWindowDimensions();
   const t = themeTokens(isNoid);
+  const s = isNoid ? SURFACE.noid : SURFACE.open;
   const { entries, activeIndex, switchWallet, mode } = useWallet();
   const [adding, setAdding] = useState(false);
   /* Measured rather than `flexBasis: 48%` + flexGrow. With flexGrow a row that
@@ -112,8 +138,7 @@ export default memo(function AccountsSheet({
         style={[
           styles.sheet,
           {
-            backgroundColor: isNoid ? SHEET_BASE.noid : SHEET_BASE.open,
-            borderColor: t.glassLine,
+            borderColor: s.border,
             /* Not jammed against the gesture bar — the Add button is the last
                thing you reach for and it should sit above the edge, not on it. */
             paddingBottom: insets.bottom + 30,
@@ -121,7 +146,15 @@ export default memo(function AccountsSheet({
             transform: [{ translateY: rise.interpolate({ inputRange: [0, 1], outputRange: [40, 0] }) }],
           },
         ]}>
-        <View style={[styles.grabber, { backgroundColor: rgba(t.inkRgb, 0.24) }]} />
+        <LinearGradient
+          colors={s.fill as unknown as readonly [string, string, ...string[]]}
+          locations={[0, 0.55, 1]}
+          start={{ x: 0.2, y: 0 }}
+          end={{ x: 0.8, y: 1 }}
+          style={styles.sheetFill}
+        />
+
+        <View style={[styles.grabber, { backgroundColor: s.grabber }]} />
 
         <View style={styles.head}>
           <View style={styles.headText}>
@@ -132,7 +165,7 @@ export default memo(function AccountsSheet({
             </Text>
           </View>
           <Pressable onPress={onClose} hitSlop={10}>
-            <View style={[styles.close, { backgroundColor: t.glass, borderColor: t.glassLine }]}>
+            <View style={[styles.close, { backgroundColor: s.chipFill, borderColor: s.chipLine }]}>
               <Svg width={11} height={11} viewBox="0 0 12 12">
                 <Path
                   d="M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5"
@@ -161,6 +194,8 @@ export default memo(function AccountsSheet({
               address={shortAddress(addressOf(e))}
               active={i === activeIndex}
               isNoid={isNoid}
+              restFill={s.cardFill}
+              restLine={s.cardLine}
               onPress={async () => {
                 if (i !== activeIndex) await switchWallet(i);
                 onClose();
@@ -212,6 +247,8 @@ const AccountCard = memo(function AccountCard({
   address,
   active,
   isNoid,
+  restFill,
+  restLine,
   onPress,
 }: {
   width: number;
@@ -220,6 +257,8 @@ const AccountCard = memo(function AccountCard({
   address: string;
   active: boolean;
   isNoid: boolean;
+  restFill: string;
+  restLine: string;
   onPress: () => void;
 }) {
   const t = themeTokens(isNoid);
@@ -233,8 +272,8 @@ const AccountCard = memo(function AccountCard({
         styles.card,
         {
           width,
-          backgroundColor: active ? "transparent" : t.glass,
-          borderColor: active ? rgba(fg, 0.28) : t.glassLine,
+          backgroundColor: active ? "transparent" : restFill,
+          borderColor: active ? rgba(fg, 0.28) : restLine,
           transform: [{ scale: pressed ? 0.975 : 1 }],
         },
       ]}>
@@ -285,9 +324,11 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     borderTopWidth: 1,
+    overflow: "hidden",
     paddingTop: 10,
     paddingHorizontal: SHEET_PAD,
   },
+  sheetFill: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 },
   grabber: { alignSelf: "center", width: 42, height: 4, borderRadius: 2, marginBottom: 14 },
   head: {
     flexDirection: "row",

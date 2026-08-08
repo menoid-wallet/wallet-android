@@ -45,7 +45,7 @@ import { COLORS, FONT } from "../../theme/tokens";
 import { rgba, themeTokens } from "../../theme/useThemeTokens";
 
 type Route = "menu" | "create" | "import";
-type CreateStep = "seed" | "name" | "saving" | "done";
+type CreateStep = "generating" | "seed" | "name" | "saving" | "done";
 type ImportStep = "method" | "input" | "name" | "saving" | "done";
 type ImportMethod = "seed" | "privatekey";
 type PkNetwork = "ethereum" | "solana" | "sui" | "aptos";
@@ -210,19 +210,36 @@ function Menu({ t, onCreate, onImport }: { t: Tokens; onCreate: () => void; onIm
 
 function CreateFlow({ t, onDone }: { t: Tokens; onDone: () => void }) {
   const { addWallet } = useWallet();
-  const [step, setStep] = useState<CreateStep>("seed");
+  const [step, setStep] = useState<CreateStep>("generating");
   const [mnemonic, setMnemonic] = useState("");
   const [copied, setCopied] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [label, setLabel] = useState("");
   const [err, setErr] = useState("");
 
+  /* Entropy + BIP-39 is synchronous and holds the JS thread for a beat, so the
+     tap on "Create new account" used to sit there doing nothing and then land
+     on a grid of twelve EMPTY tiles that filled in a moment later. Now the step
+     starts as `generating`: the spinner paints first (the setTimeout is the
+     yield that lets it), and the words only appear once they exist. */
   useEffect(() => {
-    try {
-      setMnemonic(generateMnemonicOnly().mnemonic);
-    } catch {
-      setErr("Couldn't generate a seed phrase.");
-    }
+    let alive = true;
+    const t = setTimeout(() => {
+      try {
+        const m = generateMnemonicOnly().mnemonic;
+        if (!alive) return;
+        setMnemonic(m);
+        setStep("seed");
+      } catch {
+        if (!alive) return;
+        setErr("Couldn't generate a seed phrase.");
+        setStep("seed");
+      }
+    }, 60);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
   }, []);
 
   async function save() {
@@ -243,6 +260,8 @@ function CreateFlow({ t, onDone }: { t: Tokens; onDone: () => void }) {
     }
   }
 
+  if (step === "generating")
+    return <Saving t={t} label="Conjuring a fresh seed phrase…" />;
   if (step === "saving") return <Saving t={t} />;
   if (step === "done") return <Done t={t} label={label.trim() || "Account"} />;
   if (step === "name")
@@ -547,12 +566,12 @@ function NameStep({
   );
 }
 
-function Saving({ t }: { t: Tokens }) {
+function Saving({ t, label }: { t: Tokens; label?: string }) {
   return (
     <View style={styles.centered}>
       <ActivityIndicator size="large" color={t.ink} />
       <Text style={[styles.centeredText, { color: rgba(t.inkRgb, 0.7) }]}>
-        Deriving keys and sealing the account…
+        {label ?? "Deriving keys and sealing the account…"}
       </Text>
     </View>
   );

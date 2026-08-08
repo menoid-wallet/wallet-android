@@ -24,6 +24,7 @@
 import React, { memo, useEffect, useState } from "react";
 import { Animated, StyleSheet, useWindowDimensions, View } from "react-native";
 import Sky from "./Sky";
+import { RainFar, RainNear } from "./Rain";
 import { CloudBank } from "./Clouds";
 import { modeMix } from "../../lib/modeMotion";
 
@@ -62,10 +63,21 @@ export default memo(function Backdrop({
       {on && (
         <Animated.View style={[StyleSheet.absoluteFill, { opacity: noid }]}>
           <Sky isNoid width={width} height={height} />
+          {/* It rains in noid mode. Riding the SAME opacity as the noid sky
+              means the storm arrives with the weather rather than switching on
+              once the mode has committed — drag halfway and it is half raining. */}
+          <RainFar height={height} />
         </Animated.View>
       )}
       <CloudBank layer="mid" viewportWidth={width} style={styles.top} noid={on ? noid : undefined} />
       <CloudBank layer="near" viewportWidth={width} style={styles.bottom} noid={on ? noid : undefined} />
+      {/* The near curtain goes OVER the cloud banks — a few drops between the
+          user and everything else is the whole point of a second layer. */}
+      {on && (
+        <Animated.View style={[StyleSheet.absoluteFill, { opacity: noid }]}>
+          <RainNear height={height} />
+        </Animated.View>
+      )}
     </View>
   );
 });

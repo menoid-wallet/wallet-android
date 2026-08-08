@@ -31,6 +31,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { useAppFonts } from "./src/theme/fonts";
 import { WalletProvider, useWallet } from "./src/context/WalletContext";
+import { PoolProvider } from "./src/context/PoolContext";
 import { isOnboarded } from "./src/lib/wallets";
 import { SKY_OPEN } from "./src/theme/tokens";
 import Backdrop from "./src/components/brand/Backdrop";
@@ -152,6 +153,10 @@ export default function App() {
       <SafeAreaProvider>
         <StatusBar style="light" />
         <WalletProvider>
+          {/* The private balances. Inside WalletProvider because it needs the
+              decrypted noid keys, and around everything because noid mode's
+              dashboard and its coin pages both read the same sync. */}
+          <PoolProvider>
           <View style={styles.root}>
             {/* mounted from the very first render, so it is warm and continuous */}
             <ModeBackdrop />
@@ -173,6 +178,7 @@ export default function App() {
               />
             )}
           </View>
+          </PoolProvider>
         </WalletProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

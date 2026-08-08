@@ -15,8 +15,8 @@
  * address alone is not enough: Monad, Sepolia and Base Sepolia are all signed by
  * the same EVM account, so an address-only key gave the three of them one shared
  * log and a send on Monad turned up in Sepolia's ship's log and Base's as well.
- * The address book is still shared across them on purpose — see
- * `recentRecipients`, which reads across every network for one sender.
+ * The ADDRESS BOOK is the opposite and deliberately wide — see
+ * `recentRecipients`, which spans every account and every chain.
  */
 
 import { getItem, setItem } from "./storage";
@@ -41,11 +41,6 @@ const MAX = 50;
 
 function openKey(address: string, network: NetworkId) {
   return `openaccount:${address.toLowerCase()}:${network}`;
-}
-
-/** The prefix every one of a sender's per-network logs shares. */
-function senderPrefix(address: string) {
-  return `openaccount:${address.toLowerCase()}:`;
 }
 
 /* Synchronous mirror of what is on disk. Populated by hydrateOpenTxns() and
@@ -182,20 +177,22 @@ export interface RecentRecipient {
 }
 
 /**
- * Distinct addresses this sender has paid, most recent first.
+ * Everyone this WALLET has paid, most recent first.
  *
- * Deliberately reads ACROSS networks for the one sender: the ship's log is
- * per-chain but the address book is not, so the three EVM networks — which are
- * one account — offer each other's recipients, while Solana, Sui and Aptos each
- * have their own address and are separated for free. Only hydrated chains can
- * contribute, which in practice means the one you are sending from plus any you
- * have already visited this session.
+ * THE ADDRESS BOOK IS WALLET-WIDE — not per account, and not per chain. The
+ * ship's log is deliberately narrow, because a Monad send belongs in Monad's
+ * log and nowhere else. "Who have I paid before" is the opposite question:
+ * someone you sent to from account 1 is still someone you know when you are
+ * sending from account 2, and retyping their address because you switched
+ * accounts is the exact friction this list exists to remove.
+ *
+ * Only logs that have been read off disk are in the cache to be scanned, so
+ * call `hydrateAddressBook` first.
  */
-export function recentRecipients(address: string, limit = 8): RecentRecipient[] {
-  const prefix = senderPrefix(address);
+export function recentRecipients(limit = 8): RecentRecipient[] {
   const seen = new Map<string, number>();
   for (const key of Object.keys(cache)) {
-    if (!key.startsWith(prefix)) continue;
+    if (!key.startsWith("openaccount:")) continue;
     for (const e of cache[key]) {
       if (!e.to) continue;
       const at = seen.get(e.to);
@@ -205,6 +202,20 @@ export function recentRecipients(address: string, limit = 8): RecentRecipient[] 
   return Array.from(seen, ([addr, lastAt]) => ({ address: addr, lastAt }))
     .sort((a, b) => b.lastAt - a.lastAt)
     .slice(0, limit);
+}
+
+/**
+ * Pull every account's log, on every chain, into the cache so the address book
+ * above can see them. Cheap after the first pass — `hydrateOpenTxns`
+ * short-circuits on anything already cached.
+ */
+export async function hydrateAddressBook(addresses: string[]): Promise<void> {
+  const nets = Object.keys(NETWORKS) as NetworkId[];
+  await Promise.all(
+    addresses
+      .filter(Boolean)
+      .flatMap((a) => nets.map((n) => hydrateOpenTxns(a, n).catch(() => [])))
+  );
 }
 
 export function saveOpenTx(address: string, network: NetworkId, tx: OpenTxEntry): void {

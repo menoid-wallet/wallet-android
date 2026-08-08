@@ -246,37 +246,19 @@ export default function CoinDetailView({
 
         {/* content */}
         <BlockIn delay={120} style={styles.cardContent}>
-          <Text style={[styles.eyebrow, { color: rgba(cardInk, 0.4) }]}>PRICE</Text>
-
-          {priceLoading && !price ? (
-            <View style={[styles.priceGhost, { backgroundColor: rgba(cardInk, 0.08) }]} />
-          ) : (
-            <View style={styles.priceRow}>
-              <Text style={[styles.price, { color: rgba(cardInk, 0.96) }]}>
-                {fmtCurrency(price?.usd ?? 0)}
-              </Text>
-              <View style={[styles.changePill, { backgroundColor: `${changeColor}22` }]}>
-                <Svg width={8} height={8} viewBox="0 0 8 8" style={up ? undefined : styles.flip}>
-                  <Path d="M4 1.5L7 5.5H1L4 1.5Z" fill={changeColor} />
-                </Svg>
-                <Text style={[styles.changeText, { color: changeColor }]}>
-                  {Math.abs(change).toFixed(2)}%
-                </Text>
-              </View>
-            </View>
-          )}
-
-          <View style={styles.chartBay}>
-            <LiveAreaChart
-              points={points ?? []}
-              width={chartW}
-              height={CHART_H}
-              lineColor={lineColor}
-              areaColor={chain.color}
-              loading={chartLoading}
-              emptyColor={rgba(cardInk, 0.4)}
-            />
-          </View>
+          <PriceBlock
+            price={price}
+            priceLoading={priceLoading}
+            points={points ?? []}
+            chartLoading={chartLoading}
+            chartW={chartW}
+            cardInk={cardInk}
+            changeColor={changeColor}
+            change={change}
+            up={up}
+            lineColor={lineColor}
+            areaColor={chain.color}
+          />
 
           {/* range toggle — centred, with a sliding indicator */}
           <View style={styles.rangeBay}>
@@ -348,6 +330,86 @@ export default function CoinDetailView({
     </View>
   );
 }
+
+/* ───────────────────────── Price + chart ─────────────────────────
+   The figure and the curve are ONE component so that dragging the chart's
+   read-head re-renders only this block. Held one level up, the scrub index
+   would re-render the whole coin page — header, balance, tiles and the ship's
+   log — on every point crossed, which is several times a second while your
+   thumb is moving. Everything else about the scrubber is native (see
+   LiveAreaChart); this is the one part that genuinely has to be React. */
+const PriceBlock = memo(function PriceBlock({
+  price,
+  priceLoading,
+  points,
+  chartLoading,
+  chartW,
+  cardInk,
+  changeColor,
+  change,
+  up,
+  lineColor,
+  areaColor,
+}: {
+  price?: PriceInfo;
+  priceLoading?: boolean;
+  points: number[];
+  chartLoading?: boolean;
+  chartW: number;
+  cardInk: string;
+  changeColor: string;
+  change: number;
+  up: boolean;
+  lineColor: string;
+  areaColor: string;
+}) {
+  const [scrub, setScrub] = useState<number | null>(null);
+  const onScrub = useCallback((i: number | null) => setScrub(i), []);
+
+  const held = scrub != null ? points[scrub] : undefined;
+  const shown = held ?? price?.usd ?? 0;
+
+  return (
+    <>
+      <Text style={[styles.eyebrow, { color: rgba(cardInk, 0.4) }]}>
+        {held != null ? "AT THIS POINT" : "PRICE"}
+      </Text>
+
+      {priceLoading && !price ? (
+        <View style={[styles.priceGhost, { backgroundColor: rgba(cardInk, 0.08) }]} />
+      ) : (
+        <View style={styles.priceRow}>
+          <Text style={[styles.price, { color: rgba(cardInk, 0.96) }]}>{fmtCurrency(shown)}</Text>
+          {/* The 24h pill is about today, not about wherever the head is
+              parked, so it steps aside rather than saying something untrue. */}
+          {held == null && (
+            <View style={[styles.changePill, { backgroundColor: `${changeColor}22` }]}>
+              <Svg width={8} height={8} viewBox="0 0 8 8" style={up ? undefined : styles.flip}>
+                <Path d="M4 1.5L7 5.5H1L4 1.5Z" fill={changeColor} />
+              </Svg>
+              <Text style={[styles.changeText, { color: changeColor }]}>
+                {Math.abs(change).toFixed(2)}%
+              </Text>
+            </View>
+          )}
+        </View>
+      )}
+
+      <View style={styles.chartBay}>
+        <LiveAreaChart
+          points={points}
+          width={chartW}
+          height={CHART_H}
+          lineColor={lineColor}
+          areaColor={areaColor}
+          loading={chartLoading}
+          emptyColor={rgba(cardInk, 0.4)}
+          onScrub={onScrub}
+        />
+      </View>
+    </>
+  );
+});
 
 /* ───────────────────────── Range knob ───────────────────────── */
 const RangeKnob = memo(function RangeKnob({ index, color }: { index: number; color: string }) {
