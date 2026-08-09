@@ -90,6 +90,22 @@ export default function WalletHome({
      still owns its own PAGER; this is only which coin they are showing. */
   const [activeCoin, setActiveCoin] = useState<NetworkId | null>(null);
   const coinOpen = activeCoin !== null;
+
+  /* ── Where the coin page was opened FROM ──
+     A coin page can be entered in one mode and left in the other, and leaving
+     it should put you back where you started rather than wherever the mode
+     pill last landed. Refs, not state: this is bookkeeping about a transition,
+     and re-rendering the whole shell to record it would be silly. */
+  const coinOrigin = useRef<WalletMode | null>(null);
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const coinRef = useRef<NetworkId | null>(activeCoin);
+
+  const setCoin = useCallback((id: NetworkId | null) => {
+    if (id !== null && coinRef.current === null) coinOrigin.current = modeRef.current;
+    coinRef.current = id;
+    setActiveCoin(id);
+  }, []);
   const closeOpenCoin = useRef<() => void>(() => {});
   const closeNoidCoin = useRef<() => void>(() => {});
   const registerOpenClose = useCallback((fn: () => void) => {
@@ -133,6 +149,18 @@ export default function WalletHome({
     },
     [setMode, width]
   );
+
+  /* Leaving the coin page hands you back to the mode you entered it from.
+     Open Monad in open mode, flip to noid to look at its private side, then
+     Back — you wanted the open dashboard you came from, not noid's. Runs on the
+     coin CLEARING rather than inside the close handler, so Back, the header
+     arrow and the drag all get it without each remembering to. */
+  useEffect(() => {
+    if (activeCoin !== null) return;
+    const from = coinOrigin.current;
+    coinOrigin.current = null;
+    if (from && from !== modeRef.current) goToMode(from);
+  }, [activeCoin, goToMode]);
 
   /* Where the fling actually landed. Android decides that, not us, so the mode
      is read back off the pager rather than predicted from the gesture. */
@@ -281,8 +309,7 @@ export default function WalletHome({
           <View style={{ width }}>
             <OpenModeView
               activeCoin={activeCoin}
-              setActiveCoin={setActiveCoin}
-              isActive={!isNoid}
+              setActiveCoin={setCoin}
               registerClose={registerOpenClose}
             />
           </View>
@@ -290,8 +317,7 @@ export default function WalletHome({
           <View style={{ width }}>
             <NoidModeView
               activeCoin={activeCoin}
-              setActiveCoin={setActiveCoin}
-              isActive={isNoid}
+              setActiveCoin={setCoin}
               registerClose={registerNoidClose}
             />
           </View>

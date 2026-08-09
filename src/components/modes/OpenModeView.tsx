@@ -97,17 +97,6 @@ const EMPTY_BALANCES: Record<NetworkId, string> = {
 export interface ModeViewProps {
   activeCoin: NetworkId | null;
   setActiveCoin: (c: NetworkId | null) => void;
-  /**
-   * Whether this is the mode currently on screen.
-   *
-   * BOTH mode views are mounted side by side in the shell's pager, and they
-   * share one `activeCoin` — so without this they BOTH react to it. Opening a
-   * coin in noid mode scrolled open mode's pager to a page it had not mounted,
-   * and closing it left that pager parked past the end of its content: the
-   * dashboard replaced by empty sky until you scrolled it back by hand.
-   * Only the visible mode follows the coin; the other one stays on its list.
-   */
-  isActive: boolean;
   /** Hands the shell a way to walk back — Android's Back must animate too. */
   registerClose: (close: () => void) => void;
 }
@@ -119,7 +108,7 @@ function formatAssetBalance(b: string): string {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 }
 
-export default function OpenModeView({ activeCoin, setActiveCoin, isActive, registerClose }: ModeViewProps) {
+export default function OpenModeView({ activeCoin, setActiveCoin, registerClose }: ModeViewProps) {
   const { wallet, treasureChain } = useWallet();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -247,22 +236,36 @@ export default function OpenModeView({ activeCoin, setActiveCoin, isActive, regi
      that signal, and it is exact where a requestAnimationFrame would be a
      guess. */
   const pager = useRef<ScrollView>(null);
-  const pendingOpen = useRef(false);
+  /* "tap" = you opened it here, so the slide is the point and it animates.
+     "carry" = it arrived because you switched MODES while a coin was open, and
+     then the slide must NOT animate: the mode pager is already carrying this
+     whole view across, and a second animation underneath it read as "back to
+     the list, then over to noid, then into the coin page" — three moves for
+     what should be one. Arriving instantly means this view is already showing
+     the coin page by the time the mode transition reveals it. */
+  const pendingOpen = useRef<null | "tap" | "carry">(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeRef = useRef<NetworkId | null>(null);
-  /** The coin THIS view should be showing — nothing, unless it is on screen. */
-  const shownCoin = isActive ? activeCoin : null;
+  /* BOTH views follow the coin, not just the one on screen.
+     Gating this on `isActive` is what produced the three-move mode switch: the
+     view you were leaving snapped back to its list WHILE it slid away, and the
+     one arriving then slid into its coin page after it landed. Keeping both
+     pagers on the coin means a mode switch is exactly one movement — the two
+     coin pages cross, and nothing underneath them moves at all.
+     WalletHome decides who owns the close, by mode. */
+  const shownCoin = activeCoin;
   /* Armed DURING RENDER rather than in an effect, because the coin can arrive
      from outside (a mode switch carrying one over) and `onContentSizeChange`
      can land before an effect would have run. */
-  if (shownCoin && activeRef.current !== shownCoin) pendingOpen.current = true;
+  if (shownCoin && activeRef.current !== shownCoin && !pendingOpen.current)
+    pendingOpen.current = "carry";
   activeRef.current = shownCoin;
 
-  /* Handing the coin to the other mode: park back on the list rather than
-     leaving the pager scrolled to a page that is about to unmount. */
+  /* Closed for real — park back on the list. Only ever fires on a genuine
+     close now, never on merely becoming the off-screen mode. */
   useEffect(() => {
     if (!shownCoin) {
-      pendingOpen.current = false;
+      pendingOpen.current = null;
       pager.current?.scrollTo({ x: 0, animated: false });
     }
   }, [shownCoin]);
@@ -285,7 +288,7 @@ export default function OpenModeView({ activeCoin, setActiveCoin, isActive, regi
   const openCoin = useCallback(
     (id: NetworkId) => {
       clearCloseTimer();
-      pendingOpen.current = true;
+      pendingOpen.current = "tap";
       setActiveCoin(id);
     },
     [setActiveCoin]
@@ -293,7 +296,7 @@ export default function OpenModeView({ activeCoin, setActiveCoin, isActive, regi
 
   const closeCoin = useCallback(() => {
     if (activeRef.current === null) return;
-    pendingOpen.current = false;
+    pendingOpen.current = null;
     pager.current?.scrollTo({ x: 0, animated: true });
     clearCloseTimer();
     // A backstop only: onSettled normally gets there first.
@@ -306,7 +309,7 @@ export default function OpenModeView({ activeCoin, setActiveCoin, isActive, regi
   const onPagerContentSize = useCallback(
     (w: number) => {
       if (pendingOpen.current && w > width * 1.5) {
-        pendingOpen.current = false;
+        pendingOpen.current = null;
         pager.current?.scrollTo({ x: width, animated: true });
       }
     },

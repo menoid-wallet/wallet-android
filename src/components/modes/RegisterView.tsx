@@ -42,10 +42,13 @@ function realAddressFor(wallet: any, id: NetworkId): string | undefined {
 
 export default function RegisterView({
   onDone,
+  onSkip,
   chainsToShow,
 }: {
-  /** At least one chain registered, or the user skipped. */
+  /** At least one chain registered. */
   onDone: () => void;
+  /** "Not now" — show me the dashboard anyway, with Register on every bar. */
+  onSkip: () => void;
   /** Restrict to a subset — the dashboard passes the still-unregistered ones. */
   chainsToShow?: NetworkId[];
 }) {
@@ -242,9 +245,12 @@ export default function RegisterView({
                     </Svg>
                   </View>
                 )}
+                {/* Over the glyph, filling the tile. A small ring pinned to the
+                    corner was easy to miss on the one screen where the wait is
+                    long enough to make you wonder whether the tap registered. */}
                 {st === "registering" && (
-                  <View style={styles.badgeBusy}>
-                    <ActivityIndicator size="small" color="#C9B0FF" />
+                  <View style={styles.tileBusy}>
+                    <ActivityIndicator size="large" color="#F4EEFF" />
                   </View>
                 )}
               </Pressable>
@@ -299,7 +305,7 @@ export default function RegisterView({
         </Text>
       </Pressable>
 
-      <Pressable onPress={onDone} hitSlop={8}>
+      <Pressable onPress={onSkip} hitSlop={8}>
         <Text style={styles.skip}>SKIP FOR NOW</Text>
       </Pressable>
     </ScrollView>
@@ -376,7 +382,18 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     zIndex: 2,
   },
-  badgeBusy: { position: "absolute", top: -4, right: -4, zIndex: 2 },
+  tileBusy: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    borderRadius: 17,
+    backgroundColor: "rgba(24,12,56,0.62)",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 3,
+  },
   cellLabel: { flexDirection: "row", alignItems: "center", gap: 5 },
   cellName: { fontFamily: FONT.roundSemi, fontSize: 10, color: `rgba(${INK},0.92)` },
   verify: { fontFamily: FONT.roundBold, fontSize: 8, letterSpacing: 1.2, color: "#C9B0FF" },

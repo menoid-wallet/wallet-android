@@ -10,15 +10,18 @@
  * The balances are the private ones from PoolContext (notes decrypted out of
  * the pool), NOT chain balances. Everything else about the page is open mode.
  *
- * THREE GATES, all on registration, and they are the fiddly part:
- *   1. nothing registered at all → the register page instead of the dashboard
+ * REGISTRATION GATES the numbers, never the navigation:
+ *   1. nothing registered at all → the register page, until you skip it; after
+ *      that the dashboard, with Register on every bar
  *   2. some chains registered → the dashboard, and every unregistered chain's
  *      bar carries a Register button where its balance would be
- *   3. a coin page carried in from open mode on a chain that is not registered
- *      here → drop it and open the register page, because there is nothing on
- *      that page the user could do
+ *   3. an unregistered chain's COIN PAGE still opens. It used to be refused at
+ *      the door and swapped for the register page, which meant a tap did
+ *      something you did not ask for and a coin carried over from open mode
+ *      vanished. The page opens, shows what it can, and offers Register on a
+ *      bar pinned near the bottom.
  *
- * The coin page's Mask / Unmask / Transfer are placeholders for now.
+ * Hide / Unhide are placeholders; Send and Receive are the real modals.
  */
 
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -48,6 +51,7 @@ import TreasureCardShell, { CARD_RADIUS } from "../shared/TreasureCardShell";
 import CoinDetailView, { type CoinAction } from "../shared/CoinDetailView";
 import ShipsLogEntries from "../shared/ShipsLogEntries";
 import UnderDevSheet from "../shared/UnderDevSheet";
+import ReceiveModal from "../shared/ReceiveModal";
 import RegisterView from "./RegisterView";
 import type { ModeViewProps } from "./OpenModeView";
 import { FONT } from "../../theme/tokens";
@@ -71,7 +75,7 @@ function formatAssetBalance(b: string): string {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 }
 
-export default function NoidModeView({ activeCoin, setActiveCoin, isActive, registerClose }: ModeViewProps) {
+export default function NoidModeView({ activeCoin, setActiveCoin, registerClose }: ModeViewProps) {
   const { wallet, treasureChain } = useWallet();
   const { allBalances } = usePool();
   const { prices, loading: pricesLoading } = useTokenPrices();
@@ -79,6 +83,7 @@ export default function NoidModeView({ activeCoin, setActiveCoin, isActive, regi
   const insets = useSafeAreaInsets();
 
   const [sheet, setSheet] = useState<null | "mask" | "unmask" | "transfer">(null);
+  const [showReceive, setShowReceive] = useState(false);
 
   // ── Registration ────────────────────────────────────────────────────────
   const [registered, setRegistered] = useState<Set<NetworkId>>(new Set());
@@ -86,6 +91,10 @@ export default function NoidModeView({ activeCoin, setActiveCoin, isActive, regi
   /* Forced open by the per-chain Register buttons, so the page is reachable
      even once some other chain has been registered. */
   const [forceRegister, setForceRegister] = useState(false);
+  /* "Skip for now" on the register page. Without it the gate below simply
+     re-evaluated `registered.size === 0` and put the register page straight
+     back up, so Skip appeared to do nothing at all. */
+  const [skipped, setSkipped] = useState(false);
 
   const loadRegistered = useCallback(async () => {
     if (!wallet) {
@@ -124,22 +133,36 @@ export default function NoidModeView({ activeCoin, setActiveCoin, isActive, regi
 
   // ── The pager (same machinery as open mode) ─────────────────────────────
   const pager = useRef<ScrollView>(null);
-  const pendingOpen = useRef(false);
+  /* "tap" = you opened it here, so the slide is the point and it animates.
+     "carry" = it arrived because you switched MODES while a coin was open, and
+     then the slide must NOT animate: the mode pager is already carrying this
+     whole view across, and a second animation underneath it read as "back to
+     the list, then over to noid, then into the coin page" — three moves for
+     what should be one. Arriving instantly means this view is already showing
+     the coin page by the time the mode transition reveals it. */
+  const pendingOpen = useRef<null | "tap" | "carry">(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeRef = useRef<NetworkId | null>(null);
-  /** The coin THIS view should be showing — nothing, unless it is on screen. */
-  const shownCoin = isActive ? activeCoin : null;
+  /* BOTH views follow the coin, not just the one on screen.
+     Gating this on `isActive` is what produced the three-move mode switch: the
+     view you were leaving snapped back to its list WHILE it slid away, and the
+     one arriving then slid into its coin page after it landed. Keeping both
+     pagers on the coin means a mode switch is exactly one movement — the two
+     coin pages cross, and nothing underneath them moves at all.
+     WalletHome decides who owns the close, by mode. */
+  const shownCoin = activeCoin;
   /* Armed DURING RENDER rather than in an effect, because the coin can arrive
      from outside (a mode switch carrying one over) and `onContentSizeChange`
      can land before an effect would have run. */
-  if (shownCoin && activeRef.current !== shownCoin) pendingOpen.current = true;
+  if (shownCoin && activeRef.current !== shownCoin && !pendingOpen.current)
+    pendingOpen.current = "carry";
   activeRef.current = shownCoin;
 
-  /* Handing the coin to the other mode: park back on the list rather than
-     leaving the pager scrolled to a page that is about to unmount. */
+  /* Closed for real — park back on the list. Only ever fires on a genuine
+     close now, never on merely becoming the off-screen mode. */
   useEffect(() => {
     if (!shownCoin) {
-      pendingOpen.current = false;
+      pendingOpen.current = null;
       pager.current?.scrollTo({ x: 0, animated: false });
     }
   }, [shownCoin]);
@@ -159,7 +182,7 @@ export default function NoidModeView({ activeCoin, setActiveCoin, isActive, regi
 
   const closeCoin = useCallback(() => {
     if (activeRef.current === null) return;
-    pendingOpen.current = false;
+    pendingOpen.current = null;
     pager.current?.scrollTo({ x: 0, animated: true });
     clearCloseTimer();
     closeTimer.current = setTimeout(finishClose, SLIDE_MS + 200);
@@ -170,24 +193,17 @@ export default function NoidModeView({ activeCoin, setActiveCoin, isActive, regi
 
   const openCoin = useCallback(
     (id: NetworkId) => {
-      /* Gate 3, at the door: a coin page in noid mode only exists once the
-         chain is bound. Every path in (bar tap, featured shortcut, a coin
-         carried over from open mode) lands here. */
-      if (!registered.has(id)) {
-        setForceRegister(true);
-        return;
-      }
       clearCloseTimer();
-      pendingOpen.current = true;
+      pendingOpen.current = "tap";
       setActiveCoin(id);
     },
-    [registered, setActiveCoin]
+    [setActiveCoin]
   );
 
   const onPagerContentSize = useCallback(
     (w: number) => {
       if (pendingOpen.current && w > width * 1.5) {
-        pendingOpen.current = false;
+        pendingOpen.current = null;
         pager.current?.scrollTo({ x: width, animated: true });
       }
     },
@@ -198,24 +214,31 @@ export default function NoidModeView({ activeCoin, setActiveCoin, isActive, regi
     if (x <= 1) finishClose();
   }, [finishClose]);
 
-  /* A coin carried in from open mode on a chain we are not registered on has
-     nowhere to go — drop it and offer the register page instead. */
-  useEffect(() => {
-    if (isActive && activeCoin && regLoaded && !registered.has(activeCoin)) {
-      setActiveCoin(null);
-      setForceRegister(true);
-    }
-  }, [isActive, activeCoin, regLoaded, registered, setActiveCoin]);
+  /* Is the register page standing in for the dashboard right now? Hoisted above
+     the entrance animation because that animation must not run while it is. */
+  const showRegister =
+    regLoaded && (forceRegister || (registered.size === 0 && !skipped && !shownCoin));
 
+  /* THE ENTRANCE RUNS WHEN THE DASHBOARD APPEARS, not when this component
+     mounts — and the difference is the whole bug it fixes. On a fresh wallet
+     the register page renders instead of the dashboard, so the card was not on
+     screen while its 600ms entrance played out. A NATIVE-DRIVEN value does not
+     write its result back to the JS side, so the value stayed 0; when the
+     dashboard finally mounted (Skip, or a first registration) the card came up
+     at opacity 0 and stayed there — a card-shaped hole above TOKENS. */
   const enter = useRef(new Animated.Value(0)).current;
   useEffect(() => {
-    Animated.timing(enter, {
+    if (showRegister) return;
+    enter.setValue(0);
+    const a = Animated.timing(enter, {
       toValue: 1,
       duration: 600,
       easing: Easing.bezier(0.34, 1.56, 0.64, 1),
       useNativeDriver: true,
-    }).start();
-  }, [enter]);
+    });
+    a.start();
+    return () => a.stop();
+  }, [showRegister, enter]);
 
   const totalUsd = useMemo(() => {
     let total = 0;
@@ -234,8 +257,10 @@ export default function NoidModeView({ activeCoin, setActiveCoin, isActive, regi
     [totalUsd]
   );
 
-  // Gates 1 and 2.
-  if (regLoaded && (registered.size === 0 || forceRegister)) {
+  /* Gate 1 — until it is skipped, and never over a coin page. Swapping a coin
+     page you navigated to for the register screen takes the decision away from
+     you; the page opens and offers Register on the bar pinned at its foot. */
+  if (showRegister) {
     return (
       <RegisterView
         chainsToShow={registered.size === 0 ? undefined : unregisteredIds}
@@ -243,16 +268,22 @@ export default function NoidModeView({ activeCoin, setActiveCoin, isActive, regi
           setForceRegister(false);
           void loadRegistered();
         }}
+        onSkip={() => {
+          setSkipped(true);
+          setForceRegister(false);
+        }}
       />
     );
   }
 
   const activeChain = shownCoin ? CHAIN_BY_ID[shownCoin] : null;
   const coinBalance = shownCoin ? allBalances[shownCoin] || "0" : "0";
+  const coinRegistered = shownCoin ? registered.has(shownCoin) : false;
   const coinActions: CoinAction[] = [
-    { key: "mask", icon: <MaskIcon />, label: "Mask", onPress: () => setSheet("mask") },
-    { key: "unmask", icon: <UnmaskIcon />, label: "Unmask", onPress: () => setSheet("unmask") },
-    { key: "transfer", icon: <TransferIcon />, label: "Transfer", onPress: () => setSheet("transfer") },
+    { key: "hide", icon: <MaskIcon />, label: "Hide", onPress: () => setSheet("mask") },
+    { key: "unhide", icon: <UnmaskIcon />, label: "Unhide", onPress: () => setSheet("unmask") },
+    { key: "send", icon: <SendIcon />, label: "Send", onPress: () => setSheet("transfer") },
+    { key: "receive", icon: <ReceiveIcon />, label: "Receive", onPress: () => setShowReceive(true) },
   ];
 
   const bottomPad = insets.bottom + 24;
@@ -387,18 +418,57 @@ export default function NoidModeView({ activeCoin, setActiveCoin, isActive, regi
         ) : null}
       </ScrollView>
 
+      {/* ── Not bound yet ──
+          Pinned over the coin page rather than appended to it: it is the one
+          thing to do on this screen, and it should not depend on scrolling to
+          the end of a chart and a ship's log to find it. Above the gesture bar
+          rather than on it. */}
+      {shownCoin && activeChain && !coinRegistered && (
+        <View style={[styles.regBar, { paddingBottom: insets.bottom + 26 }]}>
+          <LinearGradient
+            colors={["rgba(29,17,64,0)", "rgba(29,17,64,0.86)", "rgba(29,17,64,0.97)"]}
+            locations={[0, 0.45, 1]}
+            style={StyleSheet.absoluteFill}
+            pointerEvents="none"
+          />
+          <Text style={styles.regBarNote}>
+            {activeChain.name} isn't bound to a private identity yet.
+          </Text>
+          <Pressable
+            onPress={() => setForceRegister(true)}
+            style={({ pressed }) => [styles.regBarBtn, { transform: [{ scale: pressed ? 0.98 : 1 }] }]}>
+            <LinearGradient
+              colors={["#FBF7FF", "#C9B0FF"]}
+              start={{ x: 0.15, y: 0 }}
+              end={{ x: 0.85, y: 1 }}
+              style={[StyleSheet.absoluteFill, { borderRadius: 20 }]}
+            />
+            <Text style={styles.regBarText}>REGISTER {activeChain.symbol}</Text>
+          </Pressable>
+        </View>
+      )}
+
       <UnderDevSheet
         open={sheet !== null}
         onClose={() => setSheet(null)}
         isNoid
-        title={sheet === "mask" ? "Mask" : sheet === "unmask" ? "Unmask" : "Transfer"}
+        title={sheet === "mask" ? "Hide" : sheet === "unmask" ? "Unhide" : "Send"}
         caption={
           sheet === "mask"
             ? "Moving funds from your public balance into the private pool is being built."
             : sheet === "unmask"
               ? "Bringing private funds back out to your public balance is being built."
-              : "Private transfers between Menoid wallets are being built."
+              : "Private sends between Menoid wallets are being built."
         }
+      />
+
+      {/* The same receive sheet open mode uses — both modes encode the same real
+          address, so it is genuinely the same screen in the other palette. */}
+      <ReceiveModal
+        open={showReceive}
+        onClose={() => setShowReceive(false)}
+        mode="noid"
+        address={shownCoin ? realAddressFor(wallet, shownCoin) ?? "" : ""}
       />
     </View>
   );
@@ -443,8 +513,13 @@ const TokenBar = memo(function TokenBar({
   );
 
   if (!registered) {
+    /* The ROW still opens the coin page — an unregistered chain has a page like
+       any other, it just cannot show a balance yet. Only the button on the
+       right is a shortcut past it, straight to registering. */
     return (
-      <View style={styles.bar}>
+      <Pressable
+        onPress={onPress}
+        style={({ pressed }) => [styles.bar, pressed && { transform: [{ scale: 0.99 }] }]}>
         <View style={styles.barLeft}>
           {crest}
           <View>
@@ -463,7 +538,7 @@ const TokenBar = memo(function TokenBar({
           />
           <Text style={styles.regText}>REGISTER</Text>
         </Pressable>
-      </View>
+      </Pressable>
     );
   }
 
@@ -559,13 +634,29 @@ function UnmaskIcon() {
     </Svg>
   );
 }
-function TransferIcon() {
+/* The same two arrows open mode's Send and Receive use — the action is the
+   same action, so it should not have to be relearned in the dark. */
+function SendIcon() {
   return (
     <Svg width={15} height={15} viewBox="0 0 18 18">
       <Path
-        d="M3 6.5H14M14 6.5L11 3.5M3 11.5H14M3 11.5L6 8.5"
+        d="M4 14L14 4M14 4H7M14 4V11"
         stroke={`rgba(${INK_RGB},0.95)`}
-        strokeWidth={1.5}
+        strokeWidth={1.6}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </Svg>
+  );
+}
+function ReceiveIcon() {
+  return (
+    <Svg width={15} height={15} viewBox="0 0 18 18">
+      <Path
+        d="M14 4L4 14M4 14H11M4 14V7"
+        stroke={`rgba(${INK_RGB},0.95)`}
+        strokeWidth={1.6}
         strokeLinecap="round"
         strokeLinejoin="round"
         fill="none"
@@ -666,6 +757,30 @@ const styles = StyleSheet.create({
   barAmount: { fontFamily: FONT.roundBold, fontSize: 12.5, color: `rgba(${INK_RGB},0.9)` },
   barSymbol: { fontFamily: FONT.body, fontSize: 9, color: `rgba(${INK_RGB},0.55)`, marginBottom: 1 },
   barUsd: { fontFamily: FONT.mono, fontSize: 9, marginTop: 2 },
+
+  regBar: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: 20,
+    paddingTop: 34,
+    gap: 12,
+  },
+  regBarNote: {
+    fontFamily: FONT.body,
+    fontSize: 12,
+    textAlign: "center",
+    color: `rgba(${INK_RGB},0.8)`,
+  },
+  regBarBtn: {
+    height: 52,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  regBarText: { fontFamily: FONT.roundBold, fontSize: 12, letterSpacing: 1.8, color: "#3B2570" },
 
   regBtn: {
     paddingHorizontal: 15,

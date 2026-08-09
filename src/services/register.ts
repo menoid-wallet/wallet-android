@@ -90,6 +90,23 @@ export interface RegistrationStatus {
   encryptionPublicKey: string | null;
 }
 
+/**
+ * Thrown when the registry could not be ASKED — as opposed to answering "no".
+ *
+ * A definitive `registered: false` is a normal answer the UI can act on. An
+ * unreachable registry is not, and must never be mistaken for one: the
+ * recipient may well be registered, and treating "don't know" as "no" is how a
+ * privacy wallet ends up doing something in the clear by accident.
+ */
+export class RegistryUnavailableError extends Error {
+  readonly detail: string;
+  constructor(detail: string) {
+    super("Couldn't reach the private registry. Try again in a moment.");
+    this.name = "RegistryUnavailableError";
+    this.detail = detail;
+  }
+}
+
 export async function fetchRegistrationStatus(
   network: NetworkId,
   address: string
@@ -99,9 +116,15 @@ export async function fetchRegistrationStatus(
      form is not guaranteed to be. Lowercase always parses. */
   const addr = EVM_NETWORKS.has(network) ? address.trim().toLowerCase() : address.trim();
   const res = await fetch(`${BASE_URL}/register/${network}/status/${addr}`);
-  const data = await res.json();
+  const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.success) {
-    throw new Error(data.message || `Failed to check registration on ${network}`);
+    /* The body is an ethers CALL_EXCEPTION dump when the backend's pool address
+       is wrong for the chain — hundreds of characters of calldata, which the
+       register page would otherwise render into an 8pt label under a chain
+       tile. Console gets the detail, the UI gets a sentence. */
+    const detail = data?.message || `HTTP ${res.status} from /register/${network}/status`;
+    console.error(`[register] status check failed on ${network}:`, detail);
+    throw new RegistryUnavailableError(detail);
   }
   return {
     registered: !!data.registered,
