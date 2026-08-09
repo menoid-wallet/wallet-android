@@ -412,41 +412,30 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
               balanceLabel="Your Private Balance"
               onBack={closeCoin}
               actions={coinActions}
+              actionsSlot={
+                coinRegistered ? undefined : (
+                  <Pressable
+                    onPress={() => setForceRegister(true)}
+                    style={({ pressed }) => [
+                      styles.regCta,
+                      { transform: [{ scale: pressed ? 0.98 : 1 }] },
+                    ]}>
+                    <LinearGradient
+                      colors={["#FBF7FF", "#C9B0FF"]}
+                      start={{ x: 0.15, y: 0 }}
+                      end={{ x: 0.85, y: 1 }}
+                      style={[StyleSheet.absoluteFill, { borderRadius: 20 }]}
+                    />
+                    <Text style={styles.regCtaText}>REGISTER {activeChain.symbol}</Text>
+                  </Pressable>
+                )
+              }
               shipsLog={<ShipsLogEntries entries={[]} isNoid network={shownCoin} />}
             />
           </ScrollView>
         ) : null}
       </ScrollView>
 
-      {/* ── Not bound yet ──
-          Pinned over the coin page rather than appended to it: it is the one
-          thing to do on this screen, and it should not depend on scrolling to
-          the end of a chart and a ship's log to find it. Above the gesture bar
-          rather than on it. */}
-      {shownCoin && activeChain && !coinRegistered && (
-        <View style={[styles.regBar, { paddingBottom: insets.bottom + 26 }]}>
-          <LinearGradient
-            colors={["rgba(29,17,64,0)", "rgba(29,17,64,0.86)", "rgba(29,17,64,0.97)"]}
-            locations={[0, 0.45, 1]}
-            style={StyleSheet.absoluteFill}
-            pointerEvents="none"
-          />
-          <Text style={styles.regBarNote}>
-            {activeChain.name} isn't bound to a private identity yet.
-          </Text>
-          <Pressable
-            onPress={() => setForceRegister(true)}
-            style={({ pressed }) => [styles.regBarBtn, { transform: [{ scale: pressed ? 0.98 : 1 }] }]}>
-            <LinearGradient
-              colors={["#FBF7FF", "#C9B0FF"]}
-              start={{ x: 0.15, y: 0 }}
-              end={{ x: 0.85, y: 1 }}
-              style={[StyleSheet.absoluteFill, { borderRadius: 20 }]}
-            />
-            <Text style={styles.regBarText}>REGISTER {activeChain.symbol}</Text>
-          </Pressable>
-        </View>
-      )}
 
       <UnderDevSheet
         open={sheet !== null}
@@ -758,29 +747,15 @@ const styles = StyleSheet.create({
   barSymbol: { fontFamily: FONT.body, fontSize: 9, color: `rgba(${INK_RGB},0.55)`, marginBottom: 1 },
   barUsd: { fontFamily: FONT.mono, fontSize: 9, marginTop: 2 },
 
-  regBar: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    paddingHorizontal: 20,
-    paddingTop: 34,
-    gap: 12,
-  },
-  regBarNote: {
-    fontFamily: FONT.body,
-    fontSize: 12,
-    textAlign: "center",
-    color: `rgba(${INK_RGB},0.8)`,
-  },
-  regBarBtn: {
-    height: 52,
+  /* Sits exactly where the four action tiles would be. */
+  regCta: {
+    height: 56,
     borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
   },
-  regBarText: { fontFamily: FONT.roundBold, fontSize: 12, letterSpacing: 1.8, color: "#3B2570" },
+  regCtaText: { fontFamily: FONT.roundBold, fontSize: 12.5, letterSpacing: 1.8, color: "#3B2570" },
 
   regBtn: {
     paddingHorizontal: 15,

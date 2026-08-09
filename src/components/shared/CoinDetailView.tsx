@@ -117,6 +117,7 @@ export default function CoinDetailView({
   balanceLabel = "Your Balance",
   onBack,
   actions,
+  actionsSlot,
   shipsLog,
   children,
 }: {
@@ -129,6 +130,13 @@ export default function CoinDetailView({
   balanceLabel?: string;
   onBack: () => void;
   actions: CoinAction[];
+  /**
+   * Rendered INSTEAD of the action tiles when present. Noid mode uses it for a
+   * chain that is not bound yet: Hide / Unhide / Send / Receive would all be
+   * dead ends there, so the one thing you can actually do takes their place
+   * rather than being bolted onto the bottom of the screen.
+   */
+  actionsSlot?: React.ReactNode;
   shipsLog: React.ReactNode;
   children?: React.ReactNode;
 }) {
@@ -310,10 +318,11 @@ export default function CoinDetailView({
       </BlockIn>
 
       {/* ── Actions ── */}
-      <BlockIn delay={280} style={styles.actions}>
-        {actions.map((a) => (
-          <ActionTile key={a.key} action={a} inkRgb={t.inkRgb} isLightPage={isLightPage} />
-        ))}
+      <BlockIn delay={280} style={actionsSlot ? styles.actionSlot : styles.actions}>
+        {actionsSlot ??
+          actions.map((a) => (
+            <ActionTile key={a.key} action={a} inkRgb={t.inkRgb} isLightPage={isLightPage} />
+          ))}
       </BlockIn>
 
       {/* ── Ship's Log ── */}
@@ -562,6 +571,7 @@ const styles = StyleSheet.create({
   balanceUsd: { fontFamily: FONT.mono, fontSize: 15, fontWeight: "600" },
 
   actions: { flexDirection: "row", gap: 10, marginBottom: 20 },
+  actionSlot: { marginBottom: 20 },
   tileBay: { flex: 1 },
   tile: { paddingTop: 11, paddingBottom: 10, borderRadius: 16, borderWidth: 1, alignItems: "center", gap: 6 },
   tileGlyph: {

@@ -253,6 +253,113 @@ export async function registerOnChain(
   return { txHash: data.txHash };
 }
 
+/** Just the getter — `registered(addr)` returns 0x00…00 when it is not. */
+const POOL_REGISTERED_ABI = ["function registered(address) view returns (bytes32)"];
+
+/**
+ * "Is this wallet registered?" — ASKED OF THE CHAIN, not of the backend.
+ *
+ * This is an on-chain fact and it should never have needed a server. Routing it
+ * through /register/:net/status meant Verify inherited every problem that
+ * endpoint has, and it currently has four different ones — a pool address with
+ * no contract behind it on Sepolia and Base, a stale Aptos module, and Sui's
+ * JSON-RPC being switched off. Verify only needs a yes/no, and every chain can
+ * answer that directly from config this app already holds.
+ *
+ * SUI NEEDS THE RIGHT ENDPOINT, not a different protocol. Sui switched JSON-RPC
+ * off on its PUBLIC FULLNODES — every method, not a subset — which is the wall
+ * the backend hit and reported as "migrate to gRPC or GraphQL". The provider in
+ * `SUI_RPC` still serves the whole interface, so the read is perfectly possible
+ * from here: find the pool's `registered` Table and look the address up as a
+ * dynamic field. `dynamicFieldNotFound` is the definitive no.
+ */
+export async function isRegisteredOnChain(
+  wallet: StoredWallet,
+  network: NetworkId
+): Promise<boolean> {
+  const base = baseFor(wallet, network);
+  if (!base) return false;
+
+  if (EVM_NETWORKS.has(network)) {
+    const net = NETWORKS[network];
+    let lastErr: unknown = null;
+    for (const url of net.rpcUrls) {
+      try {
+        const provider = new ethers.JsonRpcProvider(url, {
+          name: String(net.chainId),
+          chainId: net.chainId,
+        });
+        const pool = new Contract(net.poolAddress, POOL_REGISTERED_ABI, provider);
+        const commitment: string = await pool.registered(base.address);
+        return !!commitment && BigInt(commitment) !== 0n;
+      } catch (e) {
+        lastErr = e; // try the next endpoint before giving up
+      }
+    }
+    throw new RegistryUnavailableError(String((lastErr as any)?.message ?? lastErr));
+  }
+
+  if (network === "solana") {
+    const { Connection, PublicKey } = await import("@solana/web3.js");
+    const connection = new Connection(SOLANA_RPC, "confirmed");
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("registration"), new PublicKey(base.address).toBuffer()],
+      new PublicKey(SOLANA_PROGRAM_ID)
+    );
+    // The PDA is created BY register() and by nothing else, so its existence
+    // is the registration.
+    return (await connection.getAccountInfo(pda)) !== null;
+  }
+
+  if (network === "aptos") {
+    const res = await fetch(`${APTOS_NODE_URL}/view`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        function: `${APTOS_MODULE_ADDR}::pool::is_registered`,
+        type_arguments: [],
+        arguments: [APTOS_POOL_ADDR, base.address],
+      }),
+    });
+    if (!res.ok) throw new RegistryUnavailableError(`Aptos view: HTTP ${res.status}`);
+    const out = await res.json();
+    return out?.[0] === true;
+  }
+
+  if (network === "sui") {
+    const call = async (method: string, params: unknown[]) => {
+      const res = await fetch(SUI_RPC, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      });
+      if (!res.ok) throw new RegistryUnavailableError(`Sui RPC HTTP ${res.status}`);
+      return res.json();
+    };
+
+    const obj = await call("sui_getObject", [SUI_POOL_STATE_ID, { showContent: true }]);
+    if (obj?.error) throw new RegistryUnavailableError(String(obj.error?.message ?? obj.error));
+    const tableId = obj?.result?.data?.content?.fields?.registered?.fields?.id?.id;
+    if (!tableId) throw new RegistryUnavailableError("Sui pool exposes no registered table");
+
+    const field = await call("suix_getDynamicFieldObject", [
+      tableId,
+      { type: "address", value: base.address },
+    ]);
+    // The miss arrives as an error rather than an empty result, and it is the
+    // ANSWER — the address simply has no entry in the table.
+    const err = field?.error ?? field?.result?.error;
+    if (err) {
+      const code = String(err?.code ?? "");
+      if (code === "dynamicFieldNotFound") return false;
+      throw new RegistryUnavailableError(String(err?.message ?? code));
+    }
+    return !!field?.result?.data;
+  }
+
+  throw new RegistryUnavailableError(`No on-chain check for ${network}`);
+}
+
 /**
  * "Already registered?" — ask the chain and repair the local cache.
  *
@@ -266,8 +373,7 @@ export async function verifyAndRepair(
 ): Promise<boolean> {
   const base = baseFor(wallet, network);
   if (!base) return false;
-  const status = await fetchRegistrationStatus(network, base.address);
-  if (status.registered) {
+  if (await isRegisteredOnChain(wallet, network)) {
     await setChainRegistered(base.address, network, true);
     return true;
   }
