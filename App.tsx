@@ -38,6 +38,7 @@ import Backdrop from "./src/components/brand/Backdrop";
 import Welcome from "./src/components/setup/Welcome";
 import LockScreen from "./src/components/setup/LockScreen";
 import WalletHome from "./src/components/WalletHome";
+import { ZkProverHost } from "./src/services/zkProver";
 
 const MARK = require("./assets/brand/menoid-logo-blank.png");
 
@@ -160,6 +161,10 @@ export default function App() {
           <View style={styles.root}>
             {/* mounted from the very first render, so it is warm and continuous */}
             <ModeBackdrop />
+
+            {/* The prover's engine. Invisible, mounted once, warm before the
+                first proof is asked for. */}
+            <ZkProverHost />
 
             {loaded ? (
               <View style={StyleSheet.absoluteFill}>
