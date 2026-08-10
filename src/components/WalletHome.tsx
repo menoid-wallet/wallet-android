@@ -39,7 +39,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWallet, type WalletMode } from "../context/WalletContext";
 import type { NetworkId } from "../lib/networks";
 import { useBackHandler } from "../lib/useBackHandler";
-import { modeMix, onModeScroll, setModeWidth } from "../lib/modeMotion";
+import { modeMix, modePage, onModeScroll, setModeWidth } from "../lib/modeMotion";
 import AnimatedLogo from "./brand/AnimatedLogo";
 import MenoidWordmark from "./brand/MenoidWordmark";
 import OpenModeView from "./modes/OpenModeView";
@@ -100,9 +100,30 @@ export default function WalletHome({
   }, []);
 
   const isNoid = mode === "noid";
+
+  /* Read inside the width effect without making it depend on the mode. */
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
   const settingsOpen = tab === "settings";
 
-  useEffect(() => setModeWidth(width), [width]);
+  useEffect(() => {
+    setModeWidth(width);
+
+    /* SEED THE MIX TO MATCH THE PAGER'S STARTING PAGE.
+       `contentOffset` below places the ScrollView at page 1 when the app
+       reopens in noid mode, but setting it does NOT emit a scroll event — and
+       `modePage` is fed exclusively by scroll events. So the content was noid
+       while `modeMix` still read 0: noid mode wearing open mode's sky, with the
+       pill's knob on the wrong side, until the first touch produced a scroll
+       and snapped everything across.
+
+       Deliberately keyed on WIDTH ALONE, not on the mode. `contentOffset` only
+       applies at mount and remeasure, which is exactly when this should run;
+       reacting to mode changes as well would jump the colours to their end
+       state at the start of every tap and drag, throwing away the very
+       transition this value exists to drive. */
+    modePage.setValue(modeRef.current === "noid" ? width : 0);
+  }, [width]);
 
   /* ── Colour cross-fade ──
      `mixN` is the pager's position, native, and everything that can be said as

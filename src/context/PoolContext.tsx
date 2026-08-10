@@ -43,6 +43,7 @@ import { ethers } from "ethers";
 import { poseidon4 } from "poseidon-lite";
 import { decryptMessage } from "../crypto/ecies";
 import { fetchLatestState } from "../services/api";
+import { PoolTree, type MerkleProof } from "../lib/merkleTree";
 import { useWallet } from "./WalletContext";
 import { NETWORK_IDS, type NetworkId } from "../lib/networks";
 
@@ -68,6 +69,17 @@ const blank = <T,>(v: () => T): ByNetwork<T> =>
   }, {} as ByNetwork<T>);
 
 interface PoolContextValue {
+  /**
+   * A Merkle path to one of our own notes, for the spend circuits.
+   *
+   * Rebuilt locally from the commitment list the backend serves — verified
+   * against the chain: for Monad pool 0 at 39 commitments the derived root
+   * equalled `pools(0).root` exactly. Returns null if that pool has not been
+   * synced yet, which callers must treat as "not ready", never as "no proof".
+   */
+  getMerkleProof: (network: NetworkId, poolId: string, leafIndex: number) => MerkleProof | null;
+  /** The tree root we hold for a pool — compare against the chain before spending. */
+  getRoot: (network: NetworkId, poolId: string) => string | null;
   /** Private balance per chain, formatted for display. */
   allBalances: ByNetwork<string>;
   allUTXOs: ByNetwork<UTXO[]>;
@@ -181,6 +193,69 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
 
   const [allBalances, setAllBalances] = useState<ByNetwork<string>>(() => blank(() => "0.0000"));
   const [allUTXOs, setAllUTXOs] = useState<ByNetwork<UTXO[]>>(() => blank<UTXO[]>(() => []));
+
+  /* One tree per network+pool, grown INCREMENTALLY: each sync only inserts the
+     commitments it has not seen, so a poll costs the new leaves rather than a
+     full rebuild of a tree that can hold a million. Refs, not state — a tree is
+     not something the UI renders. */
+  const trees = useRef<Record<string, PoolTree>>({});
+  const inserted = useRef<Record<string, number>>({});
+
+  /* Rebuilding a depth-20 tree is ~20 poseidon hashes PER LEAF, in pure JS, on
+     the one thread that also draws the UI — a first sync over a few dozen
+     commitments is long enough to swallow a tap. So the pools are absorbed one
+     per frame: the work is the same, but it lands in slices the renderer can
+     interleave with, which is what stops the wallet hitching while it syncs.
+
+     THE YIELD IS BETWEEN POOLS, NEVER INSIDE ONE. A half-inserted tree has a
+     root that matches nothing, and `getMerkleProof` would hand back a proof the
+     contract rejects — far worse than a slow frame. Each pool is all or none. */
+  const absorbTrees = useCallback(async (network: NetworkId, pools: any[]) => {
+    let n = 0;
+    for (const pool of pools || []) {
+      /* Raced against a timer on purpose: rAF does not fire while the app is
+         backgrounded, and the pool poll keeps running there — a bare rAF would
+         leave a sync parked mid-absorb until the app came forward again. */
+      if (n++ > 0) {
+        await new Promise<void>((r) => {
+          let done = false;
+          const fin = () => {
+            if (!done) {
+              done = true;
+              r();
+            }
+          };
+          requestAnimationFrame(fin);
+          setTimeout(fin, 50);
+        });
+      }
+      const key = `${network}_${pool.poolId}`;
+      if (!trees.current[key]) {
+        trees.current[key] = new PoolTree();
+        inserted.current[key] = 0;
+      }
+      const tree = trees.current[key];
+      const commitments: string[] = pool.commitments || [];
+      for (let i = inserted.current[key] ?? 0; i < commitments.length; i++) {
+        tree.insert(BigInt(commitments[i]));
+      }
+      inserted.current[key] = commitments.length;
+    }
+  }, []);
+
+  const getMerkleProof = useCallback(
+    (network: NetworkId, poolId: string, leafIndex: number) =>
+      trees.current[`${network}_${poolId}`]?.proof(leafIndex) ?? null,
+    []
+  );
+
+  const getRoot = useCallback(
+    (network: NetworkId, poolId: string) => {
+      const t = trees.current[`${network}_${poolId}`];
+      return t ? t.root.toString() : null;
+    },
+    []
+  );
   const [syncing, setSyncing] = useState<ByNetwork<boolean>>(() => blank(() => false));
   const [errors, setErrors] = useState<ByNetwork<string | null>>(() =>
     blank<string | null>(() => null)
@@ -212,6 +287,7 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
       setSyncing((s) => ({ ...s, [network]: true }));
       try {
         const data = await fetchLatestState(network);
+        await absorbTrees(network, data.poolStates || []);
         const claimed = found.current[network] || (found.current[network] = {});
         const { utxos, balance } = foldPoolState(data, keys, network, claimed);
         setAllUTXOs((p) => ({ ...p, [network]: utxos }));
@@ -254,8 +330,8 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
   }, [sessionKey, isUnlocked, forceSync]);
 
   const value = useMemo<PoolContextValue>(
-    () => ({ allBalances, allUTXOs, syncing, errors, firstSyncDone, forceSync }),
-    [allBalances, allUTXOs, syncing, errors, firstSyncDone, forceSync]
+    () => ({ allBalances, allUTXOs, syncing, errors, firstSyncDone, forceSync, getMerkleProof, getRoot }),
+    [allBalances, allUTXOs, syncing, errors, firstSyncDone, forceSync, getMerkleProof, getRoot]
   );
 
   return <PoolContext.Provider value={value}>{children}</PoolContext.Provider>;

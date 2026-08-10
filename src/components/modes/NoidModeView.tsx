@@ -47,6 +47,9 @@ import {
   hydrateMaskTxns,
   loadMaskTxns,
   saveMaskTx,
+  hydrateAddressBook,
+  hydrateNoidAddressBook,
+  recentRecipientsFor,
   subscribeTxns,
   type TxEntry,
 } from "../../lib/txStore";
@@ -60,8 +63,10 @@ import CoinDetailView, { type CoinAction } from "../shared/CoinDetailView";
 import ShipsLogEntries from "../shared/ShipsLogEntries";
 import UnderDevSheet from "../shared/UnderDevSheet";
 import ReceiveModal from "../shared/ReceiveModal";
-import MaskModal, { type MaskRunArgs } from "../shared/MaskModal";
+import MaskModal, { UNHIDE_COPY, NOIDSEND_COPY, type MaskRunArgs } from "../shared/MaskModal";
 import { executeMask } from "../../services/mask";
+import { executeUnmask, withdrawFeeFor } from "../../services/unmask";
+import { executeNoidSend, feePerCallFor, resolveRecipient, type Recipient } from "../../services/noidSend";
 import RegisterView from "./RegisterView";
 import type { ModeViewProps } from "./OpenModeView";
 import { FONT } from "../../theme/tokens";
@@ -76,6 +81,14 @@ function realAddressFor(wallet: any, id: NetworkId): string | undefined {
   if (id === "sui") return wallet?.suiAccount?.address;
   if (id === "aptos") return wallet?.aptosAccount?.address;
   return wallet?.normalAccount?.address;
+}
+
+/** The whole noid account for a chain — spending key included. */
+function noidAccountFor(wallet: any, id: NetworkId): any {
+  if (id === "solana") return wallet?.solanaNoidAccount;
+  if (id === "sui") return wallet?.suiNoidAccount;
+  if (id === "aptos") return wallet?.aptosNoidAccount;
+  return wallet?.noidAccount;
 }
 
 /** The noid ENCRYPTION key for a chain — what the private log is keyed by. */
@@ -94,8 +107,8 @@ function formatAssetBalance(b: string): string {
 }
 
 export default function NoidModeView({ activeCoin, setActiveCoin, registerClose }: ModeViewProps) {
-  const { wallet, treasureChain } = useWallet();
-  const { allBalances, forceSync } = usePool();
+  const { wallet, treasureChain, entries } = useWallet();
+  const { allBalances, allUTXOs, forceSync, getMerkleProof } = usePool();
   const { prices, loading: pricesLoading } = useTokenPrices();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -103,6 +116,18 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
   const [sheet, setSheet] = useState<null | "mask" | "unmask" | "transfer">(null);
   const [showReceive, setShowReceive] = useState(false);
   const [showMask, setShowMask] = useState(false);
+  const [showUnmask, setShowUnmask] = useState(false);
+  const [showNoidSend, setShowNoidSend] = useState(false);
+  /* Resolved in the address stage and reused by the run — the address the user
+     typed is not what the pool pays, their commitment is.
+
+     KEYED BY ADDRESS, not a single slot. The modal caches lookups per address
+     so it does not re-check one it has already seen, which means picking a
+     previously-resolved address never calls the resolver again — a single
+     "last resolved" slot would then still hold whoever was looked up last and
+     pay THEM. The map and the modal's cache agree because both key on the
+     same trimmed address. */
+  const recipientsRef = useRef<Map<string, Recipient | null>>(new Map());
   /* Masking moves funds OUT of the public balance, so the amount stage has to
      cap against that — the private balance beside it is the destination. */
   const [openBalance, setOpenBalance] = useState("0");
@@ -266,6 +291,229 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
     if (x <= 1) finishClose();
   }, [finishClose]);
 
+
+  /* The real thing: two notes, a groth16 proof over them, a signed deposit.
+     DECLARED ABOVE THE REGISTER GATE, and it has to be: the gate is an early
+     return, so a hook below it does not run on the renders where the register
+     page stands in — "Rendered fewer hooks than expected", and the app goes
+     down the moment an unregistered wallet opens noid mode.
+     The proof runs on the device — see services/zk.ts for why that needed a
+     wasm runtime bolted on first. */
+  const runMask = useCallback(
+    async (a: MaskRunArgs): Promise<{ hash: string }> => {
+      if (!wallet) throw new Error("Wallet is locked.");
+      const base = a.network === "solana"
+        ? wallet.solanaAccount
+        : a.network === "sui"
+          ? wallet.suiAccount
+          : a.network === "aptos"
+            ? wallet.aptosAccount
+            : wallet.normalAccount;
+      const noid = a.network === "solana"
+        ? wallet.solanaNoidAccount
+        : a.network === "sui"
+          ? wallet.suiNoidAccount
+          : a.network === "aptos"
+            ? wallet.aptosNoidAccount
+            : wallet.noidAccount;
+      if (!base || !noid) throw new Error(`No ${a.network} account in this wallet.`);
+      const out = await executeMask({
+        depositAmount: a.amount,
+        fee: a.fee,
+        network: a.network,
+        privateKey: base.privateKey,
+        noidPublicKey: noid.publicKey,
+        noidZkPublicKey: noid.zkPublicKey,
+        onProving: a.onProving,
+        onSending: a.onSending,
+      });
+
+      /* Into the PRIVATE log, keyed by the noid identity that now owns the
+         note — the open log is about the public address and this money has
+         just left it. `a.amount` is the gross; what was hidden is the gross
+         minus the relayer's cut. */
+      const hidden = Math.max(0, Number(a.amount) - Number(a.fee));
+      saveMaskTx(noid.publicKey, a.network, {
+        type: "mask",
+        txHash: out.hash,
+        fromAddress: base.address,
+        noidPublicKey: noid.publicKey,
+        amountMon: hidden.toFixed(8).replace(/\.?0+$/, "") || "0",
+        feeMon: a.fee,
+        timestamp: Date.now(),
+      });
+      return out;
+    },
+    [wallet]
+  );
+
+  /* Unhide: spend notes back out to your OWN public address. Batched — one
+     proof per four notes — so the modal is told which batch is in flight. */
+  const runUnmask = useCallback(
+    async (a: MaskRunArgs): Promise<{ hash: string }> => {
+      if (!wallet) throw new Error("Wallet is locked.");
+      const base = realAddressFor(wallet, a.network);
+      const noid = noidAccountFor(wallet, a.network);
+      if (!base || !noid) throw new Error(`No ${a.network} account in this wallet.`);
+
+      const notes = (allUTXOs[a.network] || [])
+        .filter((u) => !u.spent)
+        .map((u) => ({
+          commitment: u.commitment,
+          amount: u.amount,
+          randomness: u.randomness,
+          leafIndex: u.leafIndex,
+          poolId: u.poolId,
+        }));
+
+      const out = await executeUnmask({
+        withdrawAmount: a.amount,
+        toAddress: base,
+        network: a.network,
+        notes,
+        sender: {
+          zkSecretKey: noid.zkSecretKey,
+          zkPublicKey: noid.zkPublicKey,
+          noidPublicKey: noid.publicKey,
+          ownerAddress: base,
+        },
+        getMerkleProof: (poolId, leafIndex) => getMerkleProof(a.network, poolId, leafIndex),
+        onBatch: () => a.onProving?.(),
+        onSending: a.onSending,
+      });
+
+      saveMaskTx(noid.publicKey, a.network, {
+        type: "mask",
+        kind: "unhide",
+        txHash: out.hash,
+        fromAddress: base,
+        noidPublicKey: noid.publicKey,
+        amountMon: a.amount,
+        feeMon: a.fee,
+        timestamp: Date.now(),
+      });
+      return out;
+    },
+    [wallet, allUTXOs, getMerkleProof]
+  );
+
+  /* The recents list spans the PUBLIC log and the PRIVATE one, because someone
+     you paid privately is still someone you know. Both have to come off disk
+     before they can be scanned, so opening the send sheet loads them and the
+     list recomputes when they land. */
+  const [bookTick, setBookTick] = useState(0);
+  useEffect(() => {
+    if (!showNoidSend) return;
+    let alive = true;
+    const senders = entries.flatMap(
+      (e) => [e.openAddress, e.solanaAddress, e.suiAddress, e.aptosAddress].filter(Boolean) as string[]
+    );
+    const noidKeys = entries
+      .map((e) => noidKeyFor(e, shownCoin ?? "monad"))
+      .filter(Boolean) as string[];
+    void Promise.all([hydrateAddressBook(senders), hydrateNoidAddressBook(noidKeys)]).then(
+      () => alive && setBookTick((n) => n + 1)
+    );
+    return () => {
+      alive = false;
+    };
+  }, [showNoidSend, entries, shownCoin]);
+
+  const recents = useMemo(
+    () => (showNoidSend && shownCoin ? recentRecipientsFor(shownCoin) : []),
+    [showNoidSend, shownCoin, bookTick]
+  );
+
+  /* Stable identity on purpose: the modal debounces on this and a fresh
+     closure each render would restart the lookup forever. */
+  const resolveForSend = useCallback(
+    async (addr: string) => {
+      if (!shownCoin) return false;
+      const r = await resolveRecipient(shownCoin, addr);
+      recipientsRef.current.set(addr.trim(), r.recipient);
+      return r.registered;
+    },
+    [shownCoin]
+  );
+
+  /* Private send: pool → their pool. Same batching as unhide, but the fee is
+     charged PER BATCH, and on Monad it is zero. */
+  const runNoidSend = useCallback(
+    async (a: MaskRunArgs): Promise<{ hash: string }> => {
+      if (!wallet) throw new Error("Wallet is locked.");
+      const base = realAddressFor(wallet, a.network);
+      const noid = noidAccountFor(wallet, a.network);
+      if (!base || !noid) throw new Error(`No ${a.network} account in this wallet.`);
+      const toAddress = (a.recipient || "").trim();
+      if (!toAddress) throw new Error("No recipient.");
+      if (!recipientsRef.current.has(toAddress)) {
+        throw new Error("Recipient wasn't checked.");
+      }
+      const recipient = recipientsRef.current.get(toAddress) ?? null;
+
+      const notes = (allUTXOs[a.network] || [])
+        .filter((u) => !u.spent)
+        .map((u) => ({
+          commitment: u.commitment,
+          amount: u.amount,
+          randomness: u.randomness,
+          leafIndex: u.leafIndex,
+          poolId: u.poolId,
+        }));
+
+      /* UNREGISTERED RECIPIENT → WITHDRAW, NOT TRANSFER. There is no private
+         note to pay if they never registered, so the amount leaves the pool to
+         their real wallet instead — same modal, different operation, and the
+         fee the modal quoted already switched to the withdraw fee. The send
+         still hides the SENDER; only the receiving side is public. */
+      const out = recipient
+        ? await executeNoidSend({
+        amount: a.amount,
+        recipient,
+        network: a.network,
+        notes,
+        sender: {
+          zkSecretKey: noid.zkSecretKey,
+          zkPublicKey: noid.zkPublicKey,
+          noidPublicKey: noid.publicKey,
+          ownerAddress: base,
+        },
+        getMerkleProof: (poolId, leafIndex) => getMerkleProof(a.network, poolId, leafIndex),
+        onBatch: () => a.onProving?.(),
+        onSending: a.onSending,
+          })
+        : await executeUnmask({
+            withdrawAmount: a.amount,
+            toAddress,
+            network: a.network,
+            notes,
+            sender: {
+              zkSecretKey: noid.zkSecretKey,
+              zkPublicKey: noid.zkPublicKey,
+              noidPublicKey: noid.publicKey,
+              ownerAddress: base,
+            },
+            getMerkleProof: (poolId, leafIndex) => getMerkleProof(a.network, poolId, leafIndex),
+            onBatch: () => a.onProving?.(),
+            onSending: a.onSending,
+          });
+
+      saveMaskTx(noid.publicKey, a.network, {
+        type: "mask",
+        kind: "noidsend",
+        txHash: out.hash,
+        fromAddress: base,
+        toAddress,
+        noidPublicKey: noid.publicKey,
+        amountMon: a.amount,
+        feeMon: a.fee,
+        timestamp: Date.now(),
+      });
+      return out;
+    },
+    [wallet, allUTXOs, getMerkleProof]
+  );
+
   /* Is the register page standing in for the dashboard right now? Hoisted above
      the entrance animation because that animation must not run while it is. */
   const showRegister =
@@ -333,61 +581,11 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
   const coinRegistered = shownCoin ? registered.has(shownCoin) : false;
   const coinActions: CoinAction[] = [
     { key: "hide", icon: <MaskIcon />, label: "Hide", onPress: () => setShowMask(true) },
-    { key: "unhide", icon: <UnmaskIcon />, label: "Unhide", onPress: () => setSheet("unmask") },
-    { key: "send", icon: <SendIcon />, label: "Send", onPress: () => setSheet("transfer") },
+    { key: "unhide", icon: <UnmaskIcon />, label: "Unhide", onPress: () => setShowUnmask(true) },
+    { key: "send", icon: <SendIcon />, label: "Send", onPress: () => setShowNoidSend(true) },
     { key: "receive", icon: <ReceiveIcon />, label: "Receive", onPress: () => setShowReceive(true) },
   ];
 
-  /* The real thing: two notes, a groth16 proof over them, a signed deposit.
-     The proof runs on the device — see services/zk.ts for why that needed a
-     wasm runtime bolted on first. */
-  const runMask = useCallback(
-    async (a: MaskRunArgs): Promise<{ hash: string }> => {
-      if (!wallet) throw new Error("Wallet is locked.");
-      const base = a.network === "solana"
-        ? wallet.solanaAccount
-        : a.network === "sui"
-          ? wallet.suiAccount
-          : a.network === "aptos"
-            ? wallet.aptosAccount
-            : wallet.normalAccount;
-      const noid = a.network === "solana"
-        ? wallet.solanaNoidAccount
-        : a.network === "sui"
-          ? wallet.suiNoidAccount
-          : a.network === "aptos"
-            ? wallet.aptosNoidAccount
-            : wallet.noidAccount;
-      if (!base || !noid) throw new Error(`No ${a.network} account in this wallet.`);
-      const out = await executeMask({
-        depositAmount: a.amount,
-        fee: a.fee,
-        network: a.network,
-        privateKey: base.privateKey,
-        noidPublicKey: noid.publicKey,
-        noidZkPublicKey: noid.zkPublicKey,
-        onProving: a.onProving,
-        onSending: a.onSending,
-      });
-
-      /* Into the PRIVATE log, keyed by the noid identity that now owns the
-         note — the open log is about the public address and this money has
-         just left it. `a.amount` is the gross; what was hidden is the gross
-         minus the relayer's cut. */
-      const hidden = Math.max(0, Number(a.amount) - Number(a.fee));
-      saveMaskTx(noid.publicKey, a.network, {
-        type: "mask",
-        txHash: out.hash,
-        fromAddress: base.address,
-        noidPublicKey: noid.publicKey,
-        amountMon: hidden.toFixed(8).replace(/\.?0+$/, "") || "0",
-        feeMon: a.fee,
-        timestamp: Date.now(),
-      });
-      return out;
-    },
-    [wallet]
-  );
 
   const bottomPad = insets.bottom + 24;
 
@@ -491,7 +689,7 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
                 price={prices?.[chain.id]}
                 address={realAddressFor(wallet, chain.id) ?? ""}
                 registered={registered.has(chain.id)}
-                onPress={() => openCoin(chain.id)}
+                onPress={openCoin}
                 onRegister={() => setForceRegister(true)}
               />
             ))}
@@ -571,6 +769,40 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
         />
       )}
 
+      {shownCoin && activeChain && (
+        <MaskModal
+          open={showUnmask}
+          onClose={() => setShowUnmask(false)}
+          chain={activeChain}
+          network={shownCoin}
+          balance={allBalances[shownCoin] || "0"}
+          usdPrice={prices?.[shownCoin]?.usd ?? 0}
+          fee={withdrawFeeFor(shownCoin)}
+          copy={UNHIDE_COPY}
+          runMask={runUnmask}
+          onDone={() => void forceSync()}
+        />
+      )}
+
+      {shownCoin && activeChain && (
+        <MaskModal
+          open={showNoidSend}
+          onClose={() => setShowNoidSend(false)}
+          chain={activeChain}
+          network={shownCoin}
+          balance={allBalances[shownCoin] || "0"}
+          usdPrice={prices?.[shownCoin]?.usd ?? 0}
+          fee={feePerCallFor(shownCoin)}
+          feeUnregistered={withdrawFeeFor(shownCoin)}
+          recents={recents}
+          copy={NOIDSEND_COPY}
+          needsRecipient
+          onResolveRecipient={resolveForSend}
+          runMask={runNoidSend}
+          onDone={() => void forceSync()}
+        />
+      )}
+
       <ReceiveModal
         open={showReceive}
         onClose={() => setShowReceive(false)}
@@ -599,7 +831,10 @@ const TokenBar = memo(function TokenBar({
   price?: { usd: number; change24h: number };
   address: string;
   registered: boolean;
-  onPress: () => void;
+  /* Takes the id, so the parent passes ONE stable callback for every row —
+     an inline arrow per row defeated the memo and re-rendered all six bars on
+     every balance tick. */
+  onPress: (id: NetworkId) => void;
   onRegister: () => void;
 }) {
   const usdVal = (Number(balance) || 0) * (price?.usd ?? 0);
@@ -625,7 +860,7 @@ const TokenBar = memo(function TokenBar({
        right is a shortcut past it, straight to registering. */
     return (
       <Pressable
-        onPress={onPress}
+        onPress={() => onPress(chain.id)}
         style={({ pressed }) => [styles.bar, pressed && { transform: [{ scale: 0.99 }] }]}>
         <View style={styles.barLeft}>
           {crest}
@@ -651,7 +886,7 @@ const TokenBar = memo(function TokenBar({
 
   return (
     <Pressable
-      onPress={onPress}
+      onPress={() => onPress(chain.id)}
       style={({ pressed }) => [styles.bar, pressed && { transform: [{ scale: 0.99 }] }]}>
       <View style={styles.barLeft}>
         {crest}

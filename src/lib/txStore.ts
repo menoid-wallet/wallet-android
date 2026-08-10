@@ -38,6 +38,10 @@ export interface OpenTxEntry {
 /** Mask: money leaving the public balance and entering the pool. */
 export interface MaskEntry {
   type: "mask";
+  /** which way the money moved — defaults to hide for rows written before this */
+  kind?: "hide" | "unhide" | "noidsend";
+  /** only set for a private send */
+  toAddress?: string;
   network?: NetworkId;
   txHash: string;
   /** the open address it was taken from */
@@ -248,6 +252,51 @@ export function recentRecipients(limit = 8): RecentRecipient[] {
   return Array.from(seen, ([addr, lastAt]) => ({ address: addr, lastAt }))
     .sort((a, b) => b.lastAt - a.lastAt)
     .slice(0, limit);
+}
+
+/** The EVM chains share an address space, so they share an address book. */
+const EVM: NetworkId[] = ["monad", "sepolia", "base_sepolia"] as NetworkId[];
+const isEvm = (n: NetworkId) => EVM.includes(n);
+
+/**
+ * Everyone you have paid ON THIS CHAIN — public sends AND private sends both.
+ *
+ * Two things make this different from `recentRecipients`. First it is scoped:
+ * an address you paid on Solana is useless when the field wants an EVM address,
+ * so the log key has to match the chain — except across the EVMs, where one
+ * address works everywhere and splitting them by chain would only hide people
+ * you have actually paid. Second it reads the NOID logs too: a private send is
+ * still someone you know, and the whole point of the list is not retyping them.
+ */
+export function recentRecipientsFor(network: NetworkId, limit = 8): RecentRecipient[] {
+  const wanted = isEvm(network) ? EVM : [network];
+  const suffixes = wanted.map((n) => `:${n}`);
+  const seen = new Map<string, number>();
+
+  for (const key of Object.keys(cache)) {
+    const mine = suffixes.some((sfx) => key.endsWith(sfx));
+    if (!mine) continue;
+    for (const e of cache[key]) {
+      const to = e.type === "open" ? e.to : e.kind === "noidsend" ? e.toAddress : null;
+      if (!to) continue;
+      const at = seen.get(to);
+      if (at === undefined || e.timestamp > at) seen.set(to, e.timestamp);
+    }
+  }
+
+  return Array.from(seen, ([address, lastAt]) => ({ address, lastAt }))
+    .sort((a, b) => b.lastAt - a.lastAt)
+    .slice(0, limit);
+}
+
+/** Pull the noid logs in too, so `recentRecipientsFor` can see private sends. */
+export async function hydrateNoidAddressBook(noidKeys: string[]): Promise<void> {
+  const nets = Object.keys(NETWORKS) as NetworkId[];
+  await Promise.all(
+    noidKeys
+      .filter(Boolean)
+      .flatMap((k) => nets.map((n) => hydrateMaskTxns(k, n).catch(() => [])))
+  );
 }
 
 /**

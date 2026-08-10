@@ -35,8 +35,24 @@ import { Asset } from "expo-asset";
 import * as FileSystem from "expo-file-system/legacy";
 
 const SNARKJS = require("../../assets/zk/snarkjs.min.js");
-const DEPOSIT_WASM = require("../../assets/zk/deposit_proof.wasm");
-const DEPOSIT_ZKEY = require("../../assets/zk/deposit_proof_final.zkey");
+
+/** The three circuits. Named, because the page is asked for one by name. */
+export type Circuit = "deposit" | "withdraw" | "transfer";
+
+const ARTIFACTS: Record<Circuit, { wasm: number; zkey: number }> = {
+  deposit: {
+    wasm: require("../../assets/zk/deposit_proof.wasm"),
+    zkey: require("../../assets/zk/deposit_proof_final.zkey"),
+  },
+  withdraw: {
+    wasm: require("../../assets/zk/withdraw_proof.wasm"),
+    zkey: require("../../assets/zk/withdraw_proof_final.zkey"),
+  },
+  transfer: {
+    wasm: require("../../assets/zk/transfer_proof.wasm"),
+    zkey: require("../../assets/zk/transfer_proof_final.zkey"),
+  },
+};
 
 /** The page. Deliberately tiny — everything heavy sits beside it on disk. */
 const PAGE = `<!doctype html><html><head><meta charset="utf-8">
@@ -62,26 +78,28 @@ function bytes(name){
   });
 }
 
-let artifacts = null;
-async function load(){
-  if (!artifacts) {
+/* Keyed by circuit and kept, because a zkey is up to 24 MB and re-reading it
+   per batch would dominate a multi-batch send. */
+var loaded = {};
+async function load(circuit){
+  if (!loaded[circuit]) {
     const [wasm, zkey] = await Promise.all([
-      bytes("deposit_proof.wasm"),
-      bytes("deposit_proof_final.zkey"),
+      bytes(circuit + "_proof.wasm"),
+      bytes(circuit + "_proof_final.zkey"),
     ]);
-    artifacts = { wasm, zkey };
+    loaded[circuit] = { wasm: wasm, zkey: zkey };
   }
-  return artifacts;
+  return loaded[circuit];
 }
 
 async function run(job){
   try {
     if (typeof snarkjs === "undefined") throw new Error("snarkjs did not load");
-    const { wasm, zkey } = await load();
+    const { wasm, zkey } = await load(job.circuit || "deposit");
     const t0 = Date.now();
     const { proof, publicSignals } = await snarkjs.groth16.fullProve(job.input, wasm, zkey);
     const calldata = await snarkjs.groth16.exportSolidityCallData(proof, publicSignals);
-    reply({ id: job.id, ok: true, calldata: calldata, publicSignals: publicSignals, ms: Date.now() - t0 });
+    reply({ id: job.id, ok: true, calldata: calldata, proof: proof, publicSignals: publicSignals, ms: Date.now() - t0 });
   } catch (e) {
     reply({ id: job.id, ok: false, error: (e && e.message) ? e.message : String(e) });
   }
@@ -92,8 +110,16 @@ window.addEventListener("message", function(e){ run(JSON.parse(e.data)); });
 reply({ ready: true });
 </script></body></html>`;
 
+export interface ProveResult {
+  calldata: string;
+  /** the groth16 proof as snarkjs returns it — the transfer relay wants this */
+  proof: unknown;
+  publicSignals: string[];
+  ms: number;
+}
+
 type Pending = {
-  resolve: (v: { calldata: string; publicSignals: string[]; ms: number }) => void;
+  resolve: (v: ProveResult) => void;
   reject: (e: Error) => void;
 };
 
@@ -110,15 +136,16 @@ const ready = new Promise<void>((r) => {
  * something asks early.
  */
 export async function prove(
-  input: Record<string, string>
-): Promise<{ calldata: string; publicSignals: string[]; ms: number }> {
+  circuit: Circuit,
+  input: Record<string, unknown>
+): Promise<ProveResult> {
   await ready;
   if (!post) throw new Error("The prover is not running.");
   const id = ++seq;
-  const p = new Promise<{ calldata: string; publicSignals: string[]; ms: number }>((resolve, reject) => {
+  const p = new Promise<ProveResult>((resolve, reject) => {
     pending.set(id, { resolve, reject });
   });
-  post(JSON.stringify({ id, input }));
+  post(JSON.stringify({ id, circuit, input }));
   return p;
 }
 
@@ -130,8 +157,12 @@ async function stage(): Promise<string> {
 
   const copies: [number, string][] = [
     [SNARKJS, "snarkjs.min.js"],
-    [DEPOSIT_WASM, "deposit_proof.wasm"],
-    [DEPOSIT_ZKEY, "deposit_proof_final.zkey"],
+    ...(Object.keys(ARTIFACTS) as Circuit[]).flatMap(
+      (c): [number, string][] => [
+        [ARTIFACTS[c].wasm, `${c}_proof.wasm`],
+        [ARTIFACTS[c].zkey, `${c}_proof_final.zkey`],
+      ]
+    ),
   ];
   for (const [mod, name] of copies) {
     const target = `${dir}${name}`;
@@ -179,7 +210,7 @@ export function ZkProverHost() {
     const p = pending.get(msg?.id);
     if (!p) return;
     pending.delete(msg.id);
-    if (msg.ok) p.resolve({ calldata: msg.calldata, publicSignals: msg.publicSignals, ms: msg.ms });
+    if (msg.ok) p.resolve({ calldata: msg.calldata, proof: msg.proof, publicSignals: msg.publicSignals, ms: msg.ms });
     else p.reject(new Error(msg.error || "Proof failed."));
   }, []);
 

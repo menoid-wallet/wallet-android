@@ -30,6 +30,7 @@ import type { ChainMeta } from "../../lib/chains";
 import type { ChartRange, PriceInfo } from "../../services/prices";
 import { useTokenChart } from "../../lib/usePrices";
 import LiveAreaChart from "./LiveAreaChart";
+import { useDeferredMount } from "../../lib/useDeferredMount";
 import { FONT } from "../../theme/tokens";
 import { rgba, themeTokens } from "../../theme/useThemeTokens";
 
@@ -145,6 +146,13 @@ export default function CoinDetailView({
   const [range, setRange] = useState<ChartRange>("7");
   const { points, loading: chartLoading } = useTokenChart(chain.id, range);
   const rangeIndex = RANGES.findIndex((r) => r.key === range);
+
+  /* The log is the unbounded part of this page — however many transactions the
+     account has — and mounting it in the same commit as the page is what made
+     the pager hesitate before sliding. It arrives two frames in, by which time
+     the slide is already running and nobody is looking at the bottom of a page
+     that is still moving. See lib/useDeferredMount. */
+  const logReady = useDeferredMount(2);
 
   // ── Theme ────────────────────────────────────────────────────────────────
   // Derived from `pageTheme`, not the mode: "light" is reached from open's clear
@@ -332,7 +340,7 @@ export default function CoinDetailView({
           <Text style={[styles.logTitle, { color: rgba(t.inkRgb, 0.4) }]}>SHIP'S LOG</Text>
           <View style={[styles.logRule, { backgroundColor: rgba(t.inkRgb, 0.12) }]} />
         </View>
-        {shipsLog}
+        {logReady ? shipsLog : null}
       </BlockIn>
 
       {children}

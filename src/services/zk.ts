@@ -8,19 +8,25 @@
  * extension unpacks them.
  */
 
-import { prove } from "./zkProver";
+import { prove, type Circuit } from "./zkProver";
 
 export interface Groth16Proof {
   a: [string, string];
   b: [[string, string], [string, string]];
   c: [string, string];
   publicSignals: string[];
+  /** the raw groth16 proof — some relayer routes take this rather than calldata */
+  proof: unknown;
   /** How long the proof took, for the log. */
   ms: number;
 }
 
-export async function proveDeposit(input: Record<string, string>): Promise<Groth16Proof> {
-  const { calldata, publicSignals, ms } = await prove(input);
+/** Any of the three circuits — they all hand back the same eight elements. */
+export async function proveCircuit(
+  circuit: Circuit,
+  input: Record<string, unknown>
+): Promise<Groth16Proof> {
+  const { calldata, proof, publicSignals, ms } = await prove(circuit, input);
   const argv = calldata.replace(/["[\]\s]/g, "").split(",");
   if (argv.length < 8) throw new Error("The prover returned malformed calldata.");
   return {
@@ -31,6 +37,9 @@ export async function proveDeposit(input: Record<string, string>): Promise<Groth
     ],
     c: [argv[6], argv[7]],
     publicSignals,
+    proof,
     ms,
   };
 }
+
+export const proveDeposit = (input: Record<string, string>) => proveCircuit("deposit", input);

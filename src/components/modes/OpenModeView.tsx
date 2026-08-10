@@ -458,7 +458,7 @@ export default function OpenModeView({ activeCoin, setActiveCoin, registerClose 
             balance={balances[chain.id] || "0"}
             price={prices?.[chain.id]}
             address={addressFor(chain.id)}
-            onPress={() => openCoin(chain.id)}
+            onPress={openCoin}
           />
         ))}
       </View>
@@ -533,14 +533,19 @@ const TokenBar = memo(function TokenBar({
   balance: string;
   price?: { usd: number; change24h: number };
   address: string;
-  onPress: () => void;
+  /* Takes the id, so the parent can pass ONE stable callback for every row.
+     An inline `() => openCoin(chain.id)` gave each row a fresh prop on every
+     render and defeated the memo above — all six bars re-rendered on every
+     price tick, which is exactly the background work that made taps feel
+     late. */
+  onPress: (id: NetworkId) => void;
 }) {
   const usdVal = (Number(balance) || 0) * (price?.usd ?? 0);
   const up = (price?.change24h ?? 0) >= 0;
 
   return (
     <Pressable
-      onPress={onPress}
+      onPress={() => onPress(chain.id)}
       style={({ pressed }) => [styles.bar, pressed && { transform: [{ scale: 0.99 }] }]}>
       <View style={styles.barLeft}>
         <View style={styles.crest}>

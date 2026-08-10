@@ -56,6 +56,10 @@ function relTime(ts: number): string {
 
 function entryMeta(e: TxEntry) {
   if (e.type === "mask") {
+    if (e.kind === "unhide")
+      return { label: "Unhidden", icon: "☀️", eyebrow: "Back to your public balance" };
+    if (e.kind === "noidsend")
+      return { label: "Private send", icon: "🌫️", eyebrow: "Pool to pool — never public" };
     return { label: "Hidden", icon: "🌙", eyebrow: "Moved into the pool" };
   }
   const hasValue = e.value && e.value !== "0x0" && e.value !== "0x";
@@ -87,9 +91,17 @@ function TxDetailSheet({
     entry.type === "mask"
       ? [
           { label: "Tx Hash", value: trunc(entry.txHash, 10, 8), mono: true },
-          { label: "Hidden", value: `${entry.amountMon} ${cfg.nativeCurrency}`, accent: true },
+          {
+            label:
+              entry.kind === "unhide" ? "Unhidden" : entry.kind === "noidsend" ? "Sent" : "Hidden",
+            value: `${entry.amountMon} ${cfg.nativeCurrency}`,
+            accent: true,
+          },
           { label: "Relayer fee", value: `${entry.feeMon} ${cfg.nativeCurrency}` },
           { label: "From", value: trunc(entry.fromAddress, 8, 6), mono: true },
+          ...(entry.toAddress
+            ? [{ label: "To", value: trunc(entry.toAddress, 8, 6), mono: true }]
+            : []),
           { label: "Network", value: cfg.label },
         ]
       : [

@@ -210,6 +210,15 @@ export default memo(function SendModal({
     const value = String(tokenAmount);
     setSubmitErr("");
     setPhase("submitting");
+
+    /* Let the loading stage PAINT before the signing starts. `sendNative` opens
+       with synchronous key work, and on a single JS thread that runs before
+       React can flush the state above — so the button looked dead for a beat
+       and then the screen jumped. Same fix as MaskModal.start. */
+    await new Promise<void>((r) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => r()))
+    );
+
     try {
       const r = await sendNative(privateKey, to.trim(), value, network);
       setTxHash(r.hash);
