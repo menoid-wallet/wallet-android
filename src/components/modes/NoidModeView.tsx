@@ -43,6 +43,13 @@ import { usePool } from "../../context/PoolContext";
 import { CHAINS, CHAIN_BY_ID } from "../../lib/chains";
 import { type NetworkId } from "../../lib/networks";
 import { getBalance } from "../../lib/rpc";
+import {
+  hydrateMaskTxns,
+  loadMaskTxns,
+  saveMaskTx,
+  subscribeTxns,
+  type TxEntry,
+} from "../../lib/txStore";
 import { getRegisteredChains } from "../../lib/registration";
 import { useTokenPrices } from "../../lib/usePrices";
 import AnimatedNumber from "../shared/AnimatedNumber";
@@ -71,6 +78,14 @@ function realAddressFor(wallet: any, id: NetworkId): string | undefined {
   return wallet?.normalAccount?.address;
 }
 
+/** The noid ENCRYPTION key for a chain — what the private log is keyed by. */
+function noidKeyFor(wallet: any, id: NetworkId): string {
+  if (id === "solana") return wallet?.solanaNoidAccount?.publicKey ?? "";
+  if (id === "sui") return wallet?.suiNoidAccount?.publicKey ?? "";
+  if (id === "aptos") return wallet?.aptosNoidAccount?.publicKey ?? "";
+  return wallet?.noidAccount?.publicKey ?? "";
+}
+
 function formatAssetBalance(b: string): string {
   const n = Number(b);
   if (!Number.isFinite(n) || n === 0) return "0.00";
@@ -91,6 +106,24 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
   /* Masking moves funds OUT of the public balance, so the amount stage has to
      cap against that — the private balance beside it is the destination. */
   const [openBalance, setOpenBalance] = useState("0");
+  /* The private log for whichever coin is open, kept live by the store's own
+     subscription so a mask that just landed shows up without a refetch. */
+  const [maskLog, setMaskLog] = useState<TxEntry[]>([]);
+  useEffect(() => {
+    const noidKey = activeCoin ? noidKeyFor(wallet, activeCoin) : "";
+    if (!noidKey || !activeCoin) {
+      setMaskLog([]);
+      return;
+    }
+    let alive = true;
+    const sync = () => alive && setMaskLog(loadMaskTxns(noidKey, activeCoin));
+    void hydrateMaskTxns(noidKey, activeCoin).then(sync);
+    const off = subscribeTxns(sync);
+    return () => {
+      alive = false;
+      off();
+    };
+  }, [activeCoin, wallet]);
   useEffect(() => {
     if (!activeCoin) return;
     let alive = true;
@@ -326,7 +359,7 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
             ? wallet.aptosNoidAccount
             : wallet.noidAccount;
       if (!base || !noid) throw new Error(`No ${a.network} account in this wallet.`);
-      return executeMask({
+      const out = await executeMask({
         depositAmount: a.amount,
         fee: a.fee,
         network: a.network,
@@ -336,6 +369,22 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
         onProving: a.onProving,
         onSending: a.onSending,
       });
+
+      /* Into the PRIVATE log, keyed by the noid identity that now owns the
+         note — the open log is about the public address and this money has
+         just left it. `a.amount` is the gross; what was hidden is the gross
+         minus the relayer's cut. */
+      const hidden = Math.max(0, Number(a.amount) - Number(a.fee));
+      saveMaskTx(noid.publicKey, a.network, {
+        type: "mask",
+        txHash: out.hash,
+        fromAddress: base.address,
+        noidPublicKey: noid.publicKey,
+        amountMon: hidden.toFixed(8).replace(/\.?0+$/, "") || "0",
+        feeMon: a.fee,
+        timestamp: Date.now(),
+      });
+      return out;
     },
     [wallet]
   );
@@ -484,7 +533,7 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
                   </Pressable>
                 )
               }
-              shipsLog={<ShipsLogEntries entries={[]} isNoid network={shownCoin} />}
+              shipsLog={<ShipsLogEntries entries={maskLog} isNoid network={shownCoin} />}
             />
           </ScrollView>
         ) : null}

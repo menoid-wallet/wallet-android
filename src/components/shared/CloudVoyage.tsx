@@ -17,6 +17,11 @@ const PERIOD = 2400;
 const CLOUD_W = 72;
 /** Where each drop hangs under the cloud, in px across its 72pt width. */
 const RAIN_X = [12, 24, 36, 48, 60];
+/** When each drop is alive within the shared 0→1 fall, staggered down the row. */
+const DROP_WINDOW: number[][] = RAIN_X.map((_, i) => {
+  const start = i * 0.12;
+  return [start, start + 0.06, start + 0.3, start + 0.4];
+});
 
 export default memo(function CloudVoyage({
   tone = "light",
@@ -45,20 +50,30 @@ export default memo(function CloudVoyage({
   const fall = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
+    /* ONE animation, not a there-and-back sequence.
+       A looped sequence pauses at the turn twice over: `Animated.loop` tears
+       the sequence down and rebuilds it between iterations, and an inOut easing
+       decelerates to a full stop at each end anyway. Both read as the cloud
+       sticking. Instead the driver runs 0→1 LINEARLY forever and the POSITION
+       is a triangle wave read off it — so the sweep never stops, and the loop
+       point sits exactly where the cloud already is. */
     const d = Animated.loop(
-      Animated.sequence([
-        Animated.timing(drift, { toValue: 1, duration: PERIOD / 2, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
-        Animated.timing(drift, { toValue: 0, duration: PERIOD / 2, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
-      ])
+      Animated.timing(drift, {
+        toValue: 1,
+        duration: PERIOD,
+        easing: Easing.linear,
+        isInteraction: false,
+        useNativeDriver: true,
+      })
     );
     const b = Animated.loop(
       Animated.sequence([
-        Animated.timing(bob, { toValue: 1, duration: 850, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
-        Animated.timing(bob, { toValue: 0, duration: 850, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+        Animated.timing(bob, { toValue: 1, duration: 850, easing: Easing.inOut(Easing.sin), isInteraction: false, useNativeDriver: true }),
+        Animated.timing(bob, { toValue: 0, duration: 850, easing: Easing.inOut(Easing.sin), isInteraction: false, useNativeDriver: true }),
       ])
     );
     const f = Animated.loop(
-      Animated.timing(fall, { toValue: 1, duration: 900, easing: Easing.linear, useNativeDriver: true })
+      Animated.timing(fall, { toValue: 1, duration: 900, easing: Easing.linear, isInteraction: false, useNativeDriver: true })
     );
     d.start();
     b.start();
@@ -81,7 +96,12 @@ export default memo(function CloudVoyage({
           styles.cloud,
           {
             transform: [
-              { translateX: drift.interpolate({ inputRange: [0, 1], outputRange: [6, travel] }) },
+              {
+                translateX: drift.interpolate({
+                  inputRange: [0, 0.5, 1],
+                  outputRange: [6, travel, 6],
+                }),
+              },
               { translateY: bob.interpolate({ inputRange: [0, 1], outputRange: [0, -5] }) },
             ],
           },
@@ -107,9 +127,13 @@ export default memo(function CloudVoyage({
                   styles.drop,
                   {
                     left: x,
+                    /* Each drop is visible for a window of the shared cycle.
+                       The window must be STRICTLY increasing — an interpolation
+                       whose inputRange repeats a value (which [0, 0, …] did for
+                       the first drop) is rejected outright. */
                     opacity: fall.interpolate({
-                      inputRange: [0, (i * 0.16) % 1, Math.min(1, ((i * 0.16) % 1) + 0.35), 1],
-                      outputRange: [0, 1, 0, 0],
+                      inputRange: DROP_WINDOW[i],
+                      outputRange: [0, 1, 1, 0],
                       extrapolate: "clamp",
                     }),
                     transform: [

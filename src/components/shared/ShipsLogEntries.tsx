@@ -55,6 +55,9 @@ function relTime(ts: number): string {
 }
 
 function entryMeta(e: TxEntry) {
+  if (e.type === "mask") {
+    return { label: "Hidden", icon: "🌙", eyebrow: "Moved into the pool" };
+  }
   const hasValue = e.value && e.value !== "0x0" && e.value !== "0x";
   return {
     label: e.functionName ?? (hasValue ? "Transfer" : "Contract Call"),
@@ -80,7 +83,16 @@ function TxDetailSheet({
   const { label, icon, eyebrow } = entryMeta(entry);
 
   const ink = isNoid ? "244,238,255" : "78,47,142";
-  const rows: { label: string; value: string; mono?: boolean; accent?: boolean }[] = [
+  const rows: { label: string; value: string; mono?: boolean; accent?: boolean }[] =
+    entry.type === "mask"
+      ? [
+          { label: "Tx Hash", value: trunc(entry.txHash, 10, 8), mono: true },
+          { label: "Hidden", value: `${entry.amountMon} ${cfg.nativeCurrency}`, accent: true },
+          { label: "Relayer fee", value: `${entry.feeMon} ${cfg.nativeCurrency}` },
+          { label: "From", value: trunc(entry.fromAddress, 8, 6), mono: true },
+          { label: "Network", value: cfg.label },
+        ]
+      : [
     { label: "Tx Hash", value: trunc(entry.txHash, 10, 8), mono: true },
     ...(entry.to ? [{ label: "To", value: trunc(entry.to, 8, 6), mono: true }] : []),
     ...(entry.value && entry.value !== "0x0" && entry.value !== "0x"
@@ -170,8 +182,15 @@ const LogRow = memo(function LogRow({
   const { label, icon } = entryMeta(entry);
   const decs = DECIMALS[network];
   const symbol = NETWORKS[network].nativeCurrency;
-  const hasValue = entry.value && entry.value !== "0x0" && entry.value !== "0x";
-  const second = hasValue ? formatHexAmount(entry.value, decs, symbol) : trunc(entry.txHash, 8, 6);
+  /* A figure reads better in the body face; a hash needs the mono one. */
+  const showsAmount =
+    entry.type === "mask" || (entry.value != null && entry.value !== "0x0" && entry.value !== "0x");
+  const second =
+    entry.type === "mask"
+      ? `${entry.amountMon} ${symbol}`
+      : entry.value && entry.value !== "0x0" && entry.value !== "0x"
+        ? formatHexAmount(entry.value, decs, symbol)
+        : trunc(entry.txHash, 8, 6);
 
   const ink = isNoid ? "244,238,255" : "78,47,142";
 
@@ -207,7 +226,7 @@ const LogRow = memo(function LogRow({
                 styles.rowSecond,
                 {
                   color: isNoid ? "rgba(201,176,255,0.85)" : "rgba(123,85,201,0.75)",
-                  fontFamily: hasValue ? FONT.body : FONT.mono,
+                  fontFamily: showsAmount ? FONT.body : FONT.mono,
                 },
               ]}
               numberOfLines={1}>

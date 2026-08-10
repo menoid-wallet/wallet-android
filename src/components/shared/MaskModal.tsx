@@ -1,6 +1,11 @@
 /**
  * MaskModal.tsx — hiding funds in the pool, in the noid weather.
  *
+ * Copy is deliberately PLAIN. This screen spends real money and then waits
+ * twenty seconds on a cryptographic operation; "veil drawn" and "the noid cave"
+ * were decoration over the one moment a person most needs to be told exactly
+ * what is going on.
+ *
  * The extension's MaskModal, rebuilt around the shape open mode's SendModal
  * already established here, because they are the same gesture: name a figure,
  * confirm, watch it go. So the amount stage IS the send modal's amount stage —
@@ -28,6 +33,7 @@ import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "
 import {
   Animated,
   Easing,
+  Linking,
   Pressable,
   StyleSheet,
   Text,
@@ -35,6 +41,7 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { explorerTxUrl } from "../../lib/rpc";
 import Svg, { Path } from "react-native-svg";
 import type { ChainMeta } from "../../lib/chains";
 import type { NetworkId } from "../../lib/networks";
@@ -50,9 +57,13 @@ const INK_RGB = "244,238,255";
 const ACCENT = "#C9B0FF";
 const BAD = "#FF8E86";
 
-/** Full screen to name the figure; a little over half to wait. */
+/* Full screen to name the figure, then only as much as each later stage
+   actually needs. 0.56 for both left a third of the sheet empty above the mark
+   and a third below it — a snapped sheet is a fixed slice of the window, so any
+   slack shows as blank surface rather than shrinking away. */
 const SNAP_FORM = 1;
-const SNAP_BUSY = 0.56;
+const SNAP_BUSY = 0.44;
+const SNAP_DONE = 0.36;
 
 /** What the relayer charges to carry the note. The extension's table. */
 export function minFeeFor(network: NetworkId): string {
@@ -61,15 +72,16 @@ export function minFeeFor(network: NetworkId): string {
 
 type Phase = "form" | "proving" | "sending" | "success" | "error";
 
-/* The wait is long enough that a static label reads as a hang. The extension
-   rotates a line every few seconds for exactly this reason. */
+/* The wait is long enough that a static label reads as a hang, so the line
+   changes every few seconds. Plain description of what is happening — the
+   nautical voice the extension used says nothing about a proof being built. */
 const FLAVOUR: Record<string, string[]> = {
   proving: [
-    "Forging the zero-knowledge seal…",
-    "No trace shall remain…",
-    "The cryptographic tide rises…",
+    "Building the zero-knowledge proof…",
+    "This runs on your phone, not a server…",
+    "Almost there…",
   ],
-  sending: ["Slipping into the pool…", "The water closes over it…"],
+  sending: ["Sending to the pool…", "Waiting for confirmation…"],
 };
 
 const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"];
@@ -192,7 +204,7 @@ export default memo(function MaskModal({
 
   const busy = phase === "proving" || phase === "sending";
   const isForm = phase === "form" || phase === "error";
-  const snap = isForm ? SNAP_FORM : SNAP_BUSY;
+  const snap = isForm ? SNAP_FORM : busy ? SNAP_BUSY : SNAP_DONE;
 
   return (
     <LiquidSheet
@@ -226,7 +238,7 @@ export default memo(function MaskModal({
               </Svg>
             </Pressable>
             <View style={styles.headText}>
-              <Text style={styles.eyebrow}>HIDE IN THE NOID CAVE</Text>
+              <Text style={styles.eyebrow}>PRIVATE BALANCE</Text>
               <Text style={styles.title}>Hide {symbol}</Text>
             </View>
             <View style={{ width: 16 }} />
@@ -316,7 +328,7 @@ export default memo(function MaskModal({
               lobeBase={26}
               contentStyle={styles.cta}>
               <Text style={styles.ctaText}>
-                {phase === "error" ? "TRY AGAIN" : "HIDE IN THE NOID"}
+                {phase === "error" ? "TRY AGAIN" : "HIDE"}
               </Text>
             </CloudChip>
 
@@ -335,29 +347,42 @@ export default memo(function MaskModal({
         </View>
       ) : busy ? (
         <View style={[styles.pane, styles.centred, { height: winH * SNAP_BUSY }]}>
-          <Text style={styles.eyebrow}>DRAWING THE VEIL</Text>
-          <Text style={styles.title}>{phase === "proving" ? "Sealing…" : "Hiding…"}</Text>
+          <Text style={styles.eyebrow}>HIDING</Text>
+          <Text style={styles.title}>{phase === "proving" ? "Creating proof…" : "Sending…"}</Text>
           <AnimatedLogo size={110} expression="waiting" style={{ marginTop: 14 }} />
           <View style={{ width: Math.min(300, winW - 80), marginTop: 18 }}>
-            <CloudVoyage tone="dark" rain label={phase === "proving" ? "FORGING PROOF" : "ENTERING THE POOL"} width={Math.min(300, winW - 80)} />
+            <CloudVoyage tone="dark" rain label={phase === "proving" ? "CREATING PROOF" : "SENDING"} width={Math.min(300, winW - 80)} />
           </View>
           <Flavour phase={phase} />
         </View>
       ) : (
-        <View style={[styles.pane, styles.centred, { height: winH * SNAP_BUSY }]}>
-          <Text style={styles.eyebrow}>VEIL DRAWN</Text>
-          <Text style={styles.title}>Your treasure is hidden.</Text>
-          <AnimatedLogo size={106} expression="wink" style={{ marginTop: 12 }} />
+        <View
+          style={[
+            styles.pane,
+            styles.centred,
+            /* Real air under the last control — the cloud's lower lobes were
+               landing on the very edge of the sheet. */
+            { height: winH * SNAP_DONE, paddingBottom: insets.bottom + 26 },
+          ]}>
+          <Text style={styles.eyebrow}>COMPLETE</Text>
+          <Text style={styles.title}>Amount hidden.</Text>
+          <AnimatedLogo size={112} expression="wink" style={{ marginBottom: 16 }} />
           {!!hash && (
             <Text style={styles.hash} numberOfLines={1}>
               {hash.slice(0, 10)}…{hash.slice(-8)}
             </Text>
           )}
-          <View style={{ width: "100%", marginTop: 22 }}>
+          <View style={{ width: "100%", marginTop: 20 }}>
             <CloudChip tone="light" onPress={onClose} fullWidth lobeBase={26} contentStyle={styles.cta}>
               <Text style={styles.ctaText}>DONE</Text>
             </CloudChip>
           </View>
+
+          {!!hash && (
+            <Pressable onPress={() => void Linking.openURL(explorerTxUrl(hash, network))} hitSlop={8}>
+              <Text style={styles.explorer}>VIEW ON EXPLORER ↗</Text>
+            </Pressable>
+          )}
         </View>
       )}
     </LiquidSheet>
@@ -475,6 +500,13 @@ const styles = StyleSheet.create({
     fontSize: 11.5,
     color: `rgba(${INK_RGB},0.7)`,
     textAlign: "center",
+  },
+  explorer: {
+    marginTop: 14,
+    fontFamily: FONT.roundSemi,
+    fontSize: 10,
+    letterSpacing: 1.8,
+    color: "rgba(201,176,255,0.75)",
   },
   hash: { marginTop: 10, fontFamily: FONT.mono, fontSize: 11, color: `rgba(${INK_RGB},0.6)` },
 });

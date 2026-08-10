@@ -40,6 +40,9 @@ const EYE = {
   underlayDx: -2.7 / 1024, // the white edge peeking out on the left
 };
 
+/** The cloud's sweep, in ms — must stay equal to CloudVoyage's PERIOD. */
+const WATCH_PERIOD = 2400;
+
 const IRIS = ["#4d30af", "#7b5add", "#8260e4", "#7d58df"] as const;
 const IRIS_STOPS = [0, 0.1, 0.3, 0.9] as const;
 
@@ -397,13 +400,22 @@ function AnimatedLogoBase({
       scan.setValue(0);
       return;
     }
+    /* SAME MOTION AS THE CLOUD, or the mark is watching thin air. CloudVoyage
+       drives one LINEAR 0→1 loop over WATCH_PERIOD and reads its position off
+       it as a triangle; the eyes now do exactly that, so they arrive at each
+       end at the same instant the cloud does. It was a there-and-back sequence
+       eased in-and-out, which drifted out of phase within a cycle and stalled
+       at each turn while the cloud swept past at constant speed. */
     const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(scan, { toValue: 1, duration: 1200, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
-        Animated.timing(scan, { toValue: -1, duration: 1200, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
-      ])
+      Animated.timing(scan, {
+        toValue: 1,
+        duration: WATCH_PERIOD,
+        easing: Easing.linear,
+        isInteraction: false,
+        useNativeDriver: true,
+      })
     );
-    scan.setValue(-1);
+    scan.setValue(0);
     loop.start();
     return () => loop.stop();
   }, [waiting, scan]);
@@ -434,9 +446,10 @@ function AnimatedLogoBase({
      native node every render. */
   const scanAim = useMemo(
     () => ({
+      /* left → right → left across one loop, matching the cloud's triangle. */
       x: scan.interpolate({
-        inputRange: [-1, 1],
-        outputRange: [-size * (34 / 1024), size * (34 / 1024)],
+        inputRange: [0, 0.5, 1],
+        outputRange: [-size * (34 / 1024), size * (34 / 1024), -size * (34 / 1024)],
       }),
       y: new Animated.Value(size * (16 / 1024)),
     }),

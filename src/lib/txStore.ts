@@ -35,7 +35,22 @@ export interface OpenTxEntry {
   timestamp: number;
 }
 
-export type TxEntry = OpenTxEntry;
+/** Mask: money leaving the public balance and entering the pool. */
+export interface MaskEntry {
+  type: "mask";
+  network?: NetworkId;
+  txHash: string;
+  /** the open address it was taken from */
+  fromAddress: string;
+  /** the noid identity that received the note */
+  noidPublicKey: string;
+  /** decimal amount hidden, and the relayer's cut */
+  amountMon: string;
+  feeMon: string;
+  timestamp: number;
+}
+
+export type TxEntry = OpenTxEntry | MaskEntry;
 
 const MAX = 50;
 
@@ -45,7 +60,7 @@ function openKey(address: string, network: NetworkId) {
 
 /* Synchronous mirror of what is on disk. Populated by hydrateOpenTxns() and
    kept in step by every write, so reads never have to await. */
-const cache: Record<string, OpenTxEntry[]> = {};
+const cache: Record<string, TxEntry[]> = {};
 
 type Listener = () => void;
 const listeners = new Set<Listener>();
@@ -140,12 +155,12 @@ export async function hydrateOpenTxns(
   network: NetworkId
 ): Promise<OpenTxEntry[]> {
   const key = openKey(address, network);
-  if (cache[key]) return cache[key]; // [] is truthy — one hydrate per chain
+  if (cache[key]) return cache[key] as OpenTxEntry[]; // [] is truthy — one hydrate per chain
   const stored = await getItem<OpenTxEntry[]>(key);
   if (Array.isArray(stored)) {
     cache[key] = stored;
     notify();
-    return cache[key];
+    return stored;
   }
 
   /* Nothing under the network key: first look since the key gained one. Seed
@@ -163,12 +178,43 @@ export async function hydrateOpenTxns(
   if (rescued.length) cache[key] = rescued.map((e) => ({ ...e, network }));
   persist(key);
   notify();
-  return cache[key];
+  return cache[key] as OpenTxEntry[];
 }
 
 /** Synchronous read — whatever hydrate last put in the cache. */
 export function loadOpenTxns(address: string, network: NetworkId): OpenTxEntry[] {
-  return cache[openKey(address, network)] ?? [];
+  return (cache[openKey(address, network)] ?? []) as OpenTxEntry[];
+}
+
+/* ── The private log ──
+   Keyed by the NOID identity rather than the open address, because that is what
+   owns the note — the same split the extension makes. Per-chain for the same
+   reason the open log is: one EVM key signs on three chains. */
+function maskKey(noidPublicKey: string, network: NetworkId) {
+  return `noidmask:${noidPublicKey.toLowerCase()}:${network}`;
+}
+
+export async function hydrateMaskTxns(
+  noidPublicKey: string,
+  network: NetworkId
+): Promise<MaskEntry[]> {
+  const key = maskKey(noidPublicKey, network);
+  if (cache[key]) return cache[key] as MaskEntry[];
+  const stored = await getItem<MaskEntry[]>(key);
+  cache[key] = Array.isArray(stored) ? stored : [];
+  notify();
+  return cache[key] as MaskEntry[];
+}
+
+export function loadMaskTxns(noidPublicKey: string, network: NetworkId): MaskEntry[] {
+  return (cache[maskKey(noidPublicKey, network)] ?? []) as MaskEntry[];
+}
+
+export function saveMaskTx(noidPublicKey: string, network: NetworkId, tx: MaskEntry): void {
+  const key = maskKey(noidPublicKey, network);
+  cache[key] = [{ ...tx, network }, ...(cache[key] ?? [])].slice(0, MAX);
+  persist(key);
+  notify();
 }
 
 export interface RecentRecipient {
@@ -192,9 +238,9 @@ export interface RecentRecipient {
 export function recentRecipients(limit = 8): RecentRecipient[] {
   const seen = new Map<string, number>();
   for (const key of Object.keys(cache)) {
-    if (!key.startsWith("openaccount:")) continue;
+    if (!key.startsWith("openaccount:")) continue; // mask rows live under noidmask:
     for (const e of cache[key]) {
-      if (!e.to) continue;
+      if (e.type !== "open" || !e.to) continue;
       const at = seen.get(e.to);
       if (at === undefined || e.timestamp > at) seen.set(e.to, e.timestamp);
     }
@@ -237,7 +283,9 @@ export function updateOpenTx(
   if (!entries) return;
   const idx = entries.findIndex((e) => e.txHash === txHash);
   if (idx === -1) return;
-  entries[idx] = { ...entries[idx], ...patch };
+  const row = entries[idx];
+  if (row.type !== "open") return;
+  entries[idx] = { ...row, ...patch };
   persist(key);
   notify();
 }
