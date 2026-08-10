@@ -42,6 +42,7 @@ import { useWallet } from "../../context/WalletContext";
 import { usePool } from "../../context/PoolContext";
 import { CHAINS, CHAIN_BY_ID } from "../../lib/chains";
 import { type NetworkId } from "../../lib/networks";
+import { getBalance } from "../../lib/rpc";
 import { getRegisteredChains } from "../../lib/registration";
 import { useTokenPrices } from "../../lib/usePrices";
 import AnimatedNumber from "../shared/AnimatedNumber";
@@ -52,6 +53,8 @@ import CoinDetailView, { type CoinAction } from "../shared/CoinDetailView";
 import ShipsLogEntries from "../shared/ShipsLogEntries";
 import UnderDevSheet from "../shared/UnderDevSheet";
 import ReceiveModal from "../shared/ReceiveModal";
+import MaskModal, { type MaskRunArgs } from "../shared/MaskModal";
+import { executeMask } from "../../services/mask";
 import RegisterView from "./RegisterView";
 import type { ModeViewProps } from "./OpenModeView";
 import { FONT } from "../../theme/tokens";
@@ -77,13 +80,29 @@ function formatAssetBalance(b: string): string {
 
 export default function NoidModeView({ activeCoin, setActiveCoin, registerClose }: ModeViewProps) {
   const { wallet, treasureChain } = useWallet();
-  const { allBalances } = usePool();
+  const { allBalances, forceSync } = usePool();
   const { prices, loading: pricesLoading } = useTokenPrices();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
 
   const [sheet, setSheet] = useState<null | "mask" | "unmask" | "transfer">(null);
   const [showReceive, setShowReceive] = useState(false);
+  const [showMask, setShowMask] = useState(false);
+  /* Masking moves funds OUT of the public balance, so the amount stage has to
+     cap against that — the private balance beside it is the destination. */
+  const [openBalance, setOpenBalance] = useState("0");
+  useEffect(() => {
+    if (!activeCoin) return;
+    let alive = true;
+    const addr = realAddressFor(wallet, activeCoin);
+    if (!addr) return;
+    void getBalance(addr, activeCoin)
+      .then((b) => alive && setOpenBalance(b))
+      .catch(() => alive && setOpenBalance("0"));
+    return () => {
+      alive = false;
+    };
+  }, [activeCoin, wallet]);
 
   // ── Registration ────────────────────────────────────────────────────────
   const [registered, setRegistered] = useState<Set<NetworkId>>(new Set());
@@ -280,11 +299,46 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
   const coinBalance = shownCoin ? allBalances[shownCoin] || "0" : "0";
   const coinRegistered = shownCoin ? registered.has(shownCoin) : false;
   const coinActions: CoinAction[] = [
-    { key: "hide", icon: <MaskIcon />, label: "Hide", onPress: () => setSheet("mask") },
+    { key: "hide", icon: <MaskIcon />, label: "Hide", onPress: () => setShowMask(true) },
     { key: "unhide", icon: <UnmaskIcon />, label: "Unhide", onPress: () => setSheet("unmask") },
     { key: "send", icon: <SendIcon />, label: "Send", onPress: () => setSheet("transfer") },
     { key: "receive", icon: <ReceiveIcon />, label: "Receive", onPress: () => setShowReceive(true) },
   ];
+
+  /* The real thing: two notes, a groth16 proof over them, a signed deposit.
+     The proof runs on the device — see services/zk.ts for why that needed a
+     wasm runtime bolted on first. */
+  const runMask = useCallback(
+    async (a: MaskRunArgs): Promise<{ hash: string }> => {
+      if (!wallet) throw new Error("Wallet is locked.");
+      const base = a.network === "solana"
+        ? wallet.solanaAccount
+        : a.network === "sui"
+          ? wallet.suiAccount
+          : a.network === "aptos"
+            ? wallet.aptosAccount
+            : wallet.normalAccount;
+      const noid = a.network === "solana"
+        ? wallet.solanaNoidAccount
+        : a.network === "sui"
+          ? wallet.suiNoidAccount
+          : a.network === "aptos"
+            ? wallet.aptosNoidAccount
+            : wallet.noidAccount;
+      if (!base || !noid) throw new Error(`No ${a.network} account in this wallet.`);
+      return executeMask({
+        depositAmount: a.amount,
+        fee: a.fee,
+        network: a.network,
+        privateKey: base.privateKey,
+        noidPublicKey: noid.publicKey,
+        noidZkPublicKey: noid.zkPublicKey,
+        onProving: a.onProving,
+        onSending: a.onSending,
+      });
+    },
+    [wallet]
+  );
 
   const bottomPad = insets.bottom + 24;
 
@@ -453,6 +507,21 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
 
       {/* The same receive sheet open mode uses — both modes encode the same real
           address, so it is genuinely the same screen in the other palette. */}
+      {/* Hide = deposit into the pool. The heavy part (proof + tx) is handed in
+          rather than done in the modal, so the screen stays a screen. */}
+      {shownCoin && activeChain && (
+        <MaskModal
+          open={showMask}
+          onClose={() => setShowMask(false)}
+          chain={activeChain}
+          network={shownCoin}
+          balance={openBalance}
+          usdPrice={prices?.[shownCoin]?.usd ?? 0}
+          runMask={runMask}
+          onDone={() => void forceSync()}
+        />
+      )}
+
       <ReceiveModal
         open={showReceive}
         onClose={() => setShowReceive(false)}

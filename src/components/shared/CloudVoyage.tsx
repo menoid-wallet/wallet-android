@@ -15,13 +15,18 @@ import { FONT } from "../../theme/tokens";
 
 const PERIOD = 2400;
 const CLOUD_W = 72;
+/** Where each drop hangs under the cloud, in px across its 72pt width. */
+const RAIN_X = [12, 24, 36, 48, 60];
 
 export default memo(function CloudVoyage({
   tone = "light",
+  rain = false,
   label,
   width,
 }: {
   tone?: "light" | "dark";
+  /** Drops falling from the cloud — the noid sheet's storm. */
+  rain?: boolean;
   label?: string;
   /** track width in px; the drift is computed from it */
   width: number;
@@ -35,6 +40,9 @@ export default memo(function CloudVoyage({
 
   const drift = useRef(new Animated.Value(0)).current;
   const bob = useRef(new Animated.Value(0)).current;
+  /* One value for all five drops; each reads it at its own offset, so the fall
+     is staggered without five animations running. */
+  const fall = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     const d = Animated.loop(
@@ -49,13 +57,18 @@ export default memo(function CloudVoyage({
         Animated.timing(bob, { toValue: 0, duration: 850, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
       ])
     );
+    const f = Animated.loop(
+      Animated.timing(fall, { toValue: 1, duration: 900, easing: Easing.linear, useNativeDriver: true })
+    );
     d.start();
     b.start();
+    f.start();
     return () => {
       d.stop();
       b.stop();
+      f.stop();
     };
-  }, [drift, bob]);
+  }, [drift, bob, fall]);
 
   const travel = Math.max(0, width - CLOUD_W - 12);
 
@@ -82,6 +95,37 @@ export default memo(function CloudVoyage({
           </G>
           <Ellipse cx={64} cy={31} rx={18} ry={9} fill={highlight} />
         </Svg>
+
+        {/* The rain falls FROM the cloud, so it lives inside the drifting
+            wrapper and travels with it — as in the extension. */}
+        {rain && (
+          <View style={styles.rainBay} pointerEvents="none">
+            {RAIN_X.map((x, i) => (
+              <Animated.View
+                key={i}
+                style={[
+                  styles.drop,
+                  {
+                    left: x,
+                    opacity: fall.interpolate({
+                      inputRange: [0, (i * 0.16) % 1, Math.min(1, ((i * 0.16) % 1) + 0.35), 1],
+                      outputRange: [0, 1, 0, 0],
+                      extrapolate: "clamp",
+                    }),
+                    transform: [
+                      {
+                        translateY: fall.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [0, 18],
+                        }),
+                      },
+                    ],
+                  },
+                ]}
+              />
+            ))}
+          </View>
+        )}
       </Animated.View>
 
       {!!label && <Text style={[styles.label, { color: labelColor }]}>{label}</Text>}
@@ -93,6 +137,15 @@ const styles = StyleSheet.create({
   track: { width: "100%", height: 82, overflow: "hidden" },
   horizon: { position: "absolute", left: 0, right: 0, bottom: 22, height: 1 },
   cloud: { position: "absolute", top: 8, left: 0, width: CLOUD_W },
+  rainBay: { position: "absolute", top: 40, left: 0, right: 0, height: 22 },
+  drop: {
+    position: "absolute",
+    top: 0,
+    width: 2.4,
+    height: 9,
+    borderRadius: 2,
+    backgroundColor: "#B9A6E8",
+  },
   label: {
     position: "absolute",
     left: 0,

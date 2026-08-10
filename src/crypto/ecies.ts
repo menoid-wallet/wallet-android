@@ -48,6 +48,12 @@ function hexToBytes(hex: string): Uint8Array {
   return out;
 }
 
+function bytesToHex(b: Uint8Array): string {
+  let out = "";
+  for (const x of b) out += x.toString(16).padStart(2, "0");
+  return out;
+}
+
 function concat(...parts: Uint8Array[]): Uint8Array {
   const total = parts.reduce((n, p) => n + p.length, 0);
   const out = new Uint8Array(total);
@@ -151,6 +157,66 @@ function solanaSecret(secretKeyBase58: string): Uint8Array {
     ed = hexToBytes(secretKeyBase58.trim());
   }
   return ed25519SecretKeyToCurve25519(ed);
+}
+
+/* ── Writing a note (the mask side) ──
+   Byte-for-byte the layout `decryptEvm` above expects, and the layout eciesjs
+   produces: ephemeral uncompressed pubkey ‖ iv ‖ TAG ‖ ciphertext. The tag
+   coming BEFORE the body is the eciesjs quirk; noble emits it after, so it is
+   moved. Get this wrong and the note is unreadable by the extension — which is
+   the same pool. */
+function encryptEvm(plaintext: string, recipientPubHex: string): string {
+  const recipient = hexToBytes(recipientPubHex);
+  const ephSecret = secp256k1.utils.randomPrivateKey();
+  const ephPub = secp256k1.getPublicKey(ephSecret, false); // uncompressed, 65
+
+  const point = secp256k1.getSharedSecret(ephSecret, recipient, false);
+  const key = hkdf(sha256, concat(ephPub, point), undefined, undefined, 32);
+
+  const nonce = new Uint8Array(IV_LEN);
+  (globalThis.crypto as Crypto).getRandomValues(nonce);
+
+  const sealed = gcm(key, nonce).encrypt(new TextEncoder().encode(plaintext));
+  const body = sealed.subarray(0, sealed.length - TAG_LEN);
+  const tag = sealed.subarray(sealed.length - TAG_LEN);
+
+  return "0x" + bytesToHex(concat(concat(concat(ephPub, nonce), tag), body));
+}
+
+function sealBox(plaintext: string, recipientCurvePub: Uint8Array): string {
+  const eph = nacl.box.keyPair();
+  const nonce = new Uint8Array(24);
+  (globalThis.crypto as Crypto).getRandomValues(nonce);
+  const body = nacl.box(
+    new TextEncoder().encode(plaintext),
+    nonce,
+    recipientCurvePub,
+    eph.secretKey
+  );
+  return "0x" + bytesToHex(concat(concat(eph.publicKey, nonce), body));
+}
+
+/**
+ * Encrypt a note TO a recipient's noid encryption key, per chain.
+ *
+ * The mirror of decryptMessage — same envelope, same per-chain split.
+ */
+export function encryptNote(
+  plaintext: string,
+  recipientPublicKey: string,
+  network: string = "monad"
+): string {
+  if (network === "solana" || network === "sui" || network === "aptos") {
+    /* The stored key is an ed25519 public key; the box needs its curve25519
+       twin, which is the same conversion the read side does. */
+    return sealBox(
+      plaintext,
+      ed25519PubkeyToCurve25519(
+        network === "solana" ? bs58.decode(recipientPublicKey.trim()) : hexToBytes(recipientPublicKey)
+      )
+    );
+  }
+  return encryptEvm(plaintext, recipientPublicKey);
 }
 
 /**

@@ -18,8 +18,10 @@
     "ed25519-hd-key": "^2.0.0",
     "ethers": "^6.17.0",
     "expo": "^57.0.10",
+    "expo-asset": "~57.0.9",
     "expo-build-properties": "^57.0.8",
     "expo-clipboard": "~57.0.1",
+    "expo-file-system": "~57.0.2",
     "expo-font": "~57.0.1",
     "expo-linear-gradient": "~57.0.1",
     "expo-splash-screen": "~57.0.5",
@@ -37,6 +39,8 @@
     "react-native-safe-area-context": "~5.7.0",
     "react-native-svg": "15.15.4",
     "react-native-web": "^0.21.2",
+    "react-native-webassembly": "^0.3.3",
+    "snarkjs": "^0.7.6",
     "tweetnacl": "^1.0.3"
   },
   "devDependencies": {

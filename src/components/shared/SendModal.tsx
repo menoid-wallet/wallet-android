@@ -60,6 +60,13 @@ const BAD = "#B2382A";
 
 const SNAP_TO = 0.75;
 const SNAP_AMOUNT = 1;
+/* The loading and receipt stages stay SNAPPED — at a fraction, not unsnapped.
+   Dropping `snap` there made the sheet switch from a full-window surface to a
+   content-sized one, which is a different layout mode and therefore a hard cut:
+   the full-screen amount stage vanished and the small loading card was simply
+   there. Keeping it snapped means the same surface springs from 1 down to this,
+   and the change of size IS the transition. */
+const SNAP_SUBMIT = 0.56;
 
 type Phase = "to" | "amount" | "submitting" | "success";
 
@@ -237,7 +244,7 @@ export default memo(function SendModal({
   /* The two closing stages are content-sized. Pinning them to a fraction of the
      screen left a tall empty apron under the mark — they are short by nature and
      should be allowed to say so. */
-  const snap = phase === "to" ? SNAP_TO : phase === "amount" ? SNAP_AMOUNT : undefined;
+  const snap = phase === "to" ? SNAP_TO : phase === "amount" ? SNAP_AMOUNT : SNAP_SUBMIT;
 
   const busy = phase === "submitting";
   const showPanes = phase === "to" || phase === "amount";
@@ -325,7 +332,7 @@ export default memo(function SendModal({
           </Animated.View>
         </View>
       ) : busy ? (
-        <View style={[styles.pad, { paddingBottom: insets.bottom + 10 }]}>
+        <View style={[styles.pad, styles.snappedPane, { height: winH * SNAP_SUBMIT, paddingBottom: insets.bottom + 10 }]}>
           <View style={styles.head}>
             <Text style={styles.eyebrow}>SEND TREASURE</Text>
             <Text style={styles.title}>Sending…</Text>
@@ -339,7 +346,7 @@ export default memo(function SendModal({
           </View>
         </View>
       ) : (
-        <View style={[styles.pad, { paddingBottom: insets.bottom + 10 }]}>
+        <View style={[styles.pad, styles.snappedPane, { height: winH * SNAP_SUBMIT, paddingBottom: insets.bottom + 10 }]}>
           <View style={styles.head}>
             <Text style={styles.eyebrow}>SEND TREASURE</Text>
             <Text style={styles.title}>Delivered! ✦</Text>
@@ -705,6 +712,7 @@ const styles = StyleSheet.create({
   paneFooter: { paddingTop: 10 },
 
   pad: { paddingHorizontal: 24, paddingTop: 2 },
+  snappedPane: { justifyContent: "center" },
   head: { alignItems: "center", paddingBottom: 10 },
   eyebrow: { fontFamily: FONT.body, fontSize: 9, letterSpacing: 4, color: rgba(INK_RGB, 0.7), marginBottom: 4 },
   title: { fontFamily: FONT.roundBold, fontSize: 20, color: "#3B2570", letterSpacing: -0.3 },
