@@ -41,6 +41,7 @@ import type { NetworkId } from "../lib/networks";
 import { useBackHandler } from "../lib/useBackHandler";
 import { modeMix, modePage, onModeScroll, setModeWidth } from "../lib/modeMotion";
 import AnimatedLogo from "./brand/AnimatedLogo";
+import FeedbackModal from "./shared/FeedbackModal";
 import MenoidWordmark from "./brand/MenoidWordmark";
 import OpenModeView from "./modes/OpenModeView";
 import NoidModeView from "./modes/NoidModeView";
@@ -83,6 +84,7 @@ export default function WalletHome({
 
   const [tab, setTab] = useState<Tab>("wallet");
   const [accountsOpen, setAccountsOpen] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   /* THE COIN PAGE IS SHARED BY BOTH MODES and therefore lives here.
      Open Monad in open mode, switch to noid, and you should land on Monad's
      private page — or on the register page if that chain is not bound yet.
@@ -281,7 +283,11 @@ export default function WalletHome({
           style={styles.body}
           contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
           showsVerticalScrollIndicator={false}>
-          <SettingsPlaceholder isNoid={isNoid} onLock={onLock} />
+          <SettingsView
+            isNoid={isNoid}
+            onLock={onLock}
+            onFeedback={() => setFeedbackOpen(true)}
+          />
         </ScrollView>
       ) : (
         /* The carousel. Android's own scroller runs the drag, the fling and the
@@ -323,6 +329,13 @@ export default function WalletHome({
       )}
 
       <AccountsSheet open={accountsOpen} onClose={() => setAccountsOpen(false)} isNoid={isNoid} />
+
+      <FeedbackModal
+        open={feedbackOpen}
+        onClose={() => setFeedbackOpen(false)}
+        isNoid={isNoid}
+        walletAddress={activeEntry?.openAddress ?? ""}
+      />
     </Animated.View>
   );
 }
@@ -407,15 +420,52 @@ function ModePill({
 }
 
 /* ───────────────────────── Settings (placeholder) ───────────────────────── */
-function SettingsPlaceholder({ isNoid, onLock }: { isNoid: boolean; onLock: () => void }) {
+/**
+ * Settings — the feedback form and a lock, and nothing else.
+ *
+ * There WAS a mode switcher here. It went because the header pill already owns
+ * that job and sits on every screen: two controls for one piece of state is a
+ * second place to keep in sync, and settings is the one you cannot see while
+ * the mode is actually changing.
+ */
+function SettingsView({
+  isNoid,
+  onLock,
+  onFeedback,
+}: {
+  isNoid: boolean;
+  onLock: () => void;
+  onFeedback: () => void;
+}) {
   const t = themeTokens(isNoid);
+
   return (
-    <View>
-      <UnderDevPanel
-        isNoid={isNoid}
-        label="Settings"
-        caption="Account details, connected sites and preferences are being built."
-      />
+    <View style={styles.settingsBay}>
+      <Text style={[styles.settingsLabel, { color: rgba(t.inkRgb, 0.45) }]}>FEEDBACK</Text>
+      <Pressable
+        onPress={onFeedback}
+        style={({ pressed }) => [
+          styles.rowCard,
+          { backgroundColor: t.glass, borderColor: pressed ? t.down : t.glassLine },
+        ]}>
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.rowTitle, { color: t.ink }]}>Help shape Menoid</Text>
+          <Text style={[styles.rowSub, { color: rgba(t.inkRgb, 0.5) }]}>
+            Ten quick questions — and the airdrop list.
+          </Text>
+        </View>
+        <Svg width={9} height={9} viewBox="0 0 10 10">
+          <Path
+            d="M3.5 2L6.5 5L3.5 8"
+            stroke={rgba(t.inkRgb, 0.45)}
+            strokeWidth={1.5}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            fill="none"
+          />
+        </Svg>
+      </Pressable>
+
       <View style={styles.lockBay}>
         <Pressable
           onPress={onLock}
@@ -537,14 +587,50 @@ const styles = StyleSheet.create({
 
   body: { flex: 1 },
 
-  lockBay: { paddingHorizontal: 20, paddingBottom: 30 },
+  settingsBay: { paddingHorizontal: 18, paddingTop: 8 },
+  settingsLabel: {
+    fontFamily: FONT.body,
+    fontSize: 10,
+    letterSpacing: 2,
+    marginTop: 16,
+    marginBottom: 9,
+    marginLeft: 4,
+  },
+  modeCard: { borderRadius: 20, borderWidth: 1, padding: 10 },
+  modeRow: { flexDirection: "row", gap: 10 },
+  modeOpt: {
+    flex: 1,
+    borderRadius: 15,
+    borderWidth: 1,
+    paddingVertical: 14,
+    paddingHorizontal: 13,
+  },
+  modeOptTitle: { fontFamily: FONT.roundSemi, fontSize: 15 },
+  modeOptSub: { marginTop: 3, fontFamily: FONT.body, fontSize: 11 },
+  rowCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderRadius: 20,
+    borderWidth: 1,
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+  },
+  rowTitle: { fontFamily: FONT.roundSemi, fontSize: 14 },
+  rowSub: { marginTop: 3, fontFamily: FONT.body, fontSize: 11.5 },
+  /* NO horizontal padding of its own: `settingsBay` already pads the column,
+     and the extra 20 here made the lock button 40pt narrower than the mode and
+     feedback cards above it. The top margin is what stops it collapsing into
+     the feedback card — it used to sit flush against it. */
+  lockBay: { marginTop: 22, paddingBottom: 30 },
   lock: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    paddingVertical: 14,
-    borderRadius: 18,
+    /* matched to rowCard so the three cards read as one stack */
+    paddingVertical: 20,
+    borderRadius: 20,
     borderWidth: 1,
   },
   lockLabel: { fontFamily: FONT.roundSemi, fontSize: 12, letterSpacing: 2.4 },

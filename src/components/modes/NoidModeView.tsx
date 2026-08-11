@@ -408,16 +408,22 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
     const senders = entries.flatMap(
       (e) => [e.openAddress, e.solanaAddress, e.suiAddress, e.aptosAddress].filter(Boolean) as string[]
     );
-    const noidKeys = entries
-      .map((e) => noidKeyFor(e, shownCoin ?? "monad"))
-      .filter(Boolean) as string[];
+    /* From the UNLOCKED wallet, not the entry list — entries carry labels and
+       public addresses only, so keying off them yielded empty strings and the
+       private log was never scanned. */
+    const noidKeys = [
+      wallet?.noidAccount?.publicKey,
+      wallet?.solanaNoidAccount?.publicKey,
+      wallet?.suiNoidAccount?.publicKey,
+      wallet?.aptosNoidAccount?.publicKey,
+    ].filter(Boolean) as string[];
     void Promise.all([hydrateAddressBook(senders), hydrateNoidAddressBook(noidKeys)]).then(
       () => alive && setBookTick((n) => n + 1)
     );
     return () => {
       alive = false;
     };
-  }, [showNoidSend, entries, shownCoin]);
+  }, [showNoidSend, entries, wallet, shownCoin]);
 
   const recents = useMemo(
     () => (showNoidSend && shownCoin ? recentRecipientsFor(shownCoin) : []),

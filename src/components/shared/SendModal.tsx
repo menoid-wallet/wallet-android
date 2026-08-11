@@ -44,7 +44,13 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWallet } from "../../context/WalletContext";
 import { explorerTxUrl, sendNative } from "../../lib/rpc";
 import { NETWORKS, type NetworkId } from "../../lib/networks";
-import { hydrateAddressBook, recentRecipients, saveOpenTx, updateOpenTx } from "../../lib/txStore";
+import {
+  hydrateAddressBook,
+  hydrateNoidAddressBook,
+  recentRecipientsFor,
+  saveOpenTx,
+  updateOpenTx,
+} from "../../lib/txStore";
 import { useKeyboardHeight } from "../../lib/useKeyboardHeight";
 import type { ChainMeta } from "../../lib/chains";
 import AnimatedLogo from "../brand/AnimatedLogo";
@@ -149,11 +155,18 @@ export default memo(function SendModal({
     return () => clearTimeout(t);
   }, [open]);
 
-  /* The address book spans every account, not just the one you are sending
-     from — see txStore.recentRecipients. The logs have to be pulled off disk
-     before they can be scanned, so opening the sheet loads them and the list is
-     recomputed when they land. */
-  const { entries } = useWallet();
+  /* The address book spans every ACCOUNT but not every CHAIN.
+     
+     It used to span everything, which put Solana and Aptos addresses in the
+     recents list of a Monad send — addresses that cannot even be pasted into
+     that field, let alone paid. `recentRecipientsFor` scopes to the chain, with
+     the three EVMs sharing one book because one address genuinely works on all
+     of them. Accounts still all count: someone you paid from account 1 is
+     someone you know from account 2.
+
+     The logs have to be pulled off disk before they can be scanned, so opening
+     the sheet loads them and the list is recomputed when they land. */
+  const { entries, wallet } = useWallet();
   const [bookTick, setBookTick] = useState(0);
   useEffect(() => {
     if (!open) return;
@@ -161,13 +174,27 @@ export default memo(function SendModal({
     const senders = entries.flatMap((e) =>
       [e.openAddress, e.solanaAddress, e.suiAddress, e.aptosAddress].filter(Boolean) as string[]
     );
-    void hydrateAddressBook(senders).then(() => alive && setBookTick((n) => n + 1));
+    /* Only the UNLOCKED wallet carries noid keys — the entry list is just
+       labels and public addresses — so the private log can only be scanned for
+       the wallet you are currently in. */
+    const noidKeys = [
+      wallet?.noidAccount?.publicKey,
+      wallet?.solanaNoidAccount?.publicKey,
+      wallet?.suiNoidAccount?.publicKey,
+      wallet?.aptosNoidAccount?.publicKey,
+    ].filter(Boolean) as string[];
+    void Promise.all([hydrateAddressBook(senders), hydrateNoidAddressBook(noidKeys)]).then(
+      () => alive && setBookTick((n) => n + 1)
+    );
     return () => {
       alive = false;
     };
-  }, [open, entries]);
+  }, [open, entries, wallet]);
 
-  const recents = useMemo(() => (open ? recentRecipients() : []), [open, bookTick]);
+  const recents = useMemo(
+    () => (open ? recentRecipientsFor(network) : []),
+    [open, network, bookTick]
+  );
 
   const addrOk = useMemo(() => isValidAddressForChain(to, network), [to, network]);
 
