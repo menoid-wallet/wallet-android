@@ -124,6 +124,19 @@ function nullifierIsSpent(nullifier: string, spent: string[]): boolean {
 export type Claimed = Record<string, Record<string, UTXO>>;
 
 /**
+ * Commitments already trial-decrypted and found to belong to SOMEBODY ELSE.
+ *
+ * This is the other half of the cache and the important one, because failures
+ * are the common case: in a shared pool almost every note is a stranger's. Only
+ * successes were remembered before, so each poll re-ran an ECDH against every
+ * foreign note in every pool, forever — dozens of elliptic-curve operations
+ * every ten seconds on the one thread that also draws the UI. That is what made
+ * taps land seconds late at random. A note that failed to open once cannot
+ * start opening later; the answer is permanent, so cache it.
+ */
+export type Foreign = Record<string, Set<string>>;
+
+/**
  * THE WHOLE BALANCE, as a pure function — deliberately outside the component so
  * it can be tested against real pool data without a renderer (see
  * scripts/verify-pool-fold.cjs). Mutates `claimed`, which is the per-chain
@@ -135,13 +148,15 @@ export function foldPoolState(
   data: { spentNullifiers?: string[]; poolStates?: any[] },
   keys: { privateKey: string; zkSecretKey: string },
   network: NetworkId,
-  claimed: Claimed
+  claimed: Claimed,
+  foreign: Foreign = {}
 ): { utxos: UTXO[]; balance: string } {
   const spent = data.spentNullifiers || [];
 
   for (const pool of data.poolStates || []) {
     const pid = pool.poolId;
     const mine = claimed[pid] || (claimed[pid] = {});
+    const theirs = foreign[pid] || (foreign[pid] = new Set());
     const notes = pool.encryptedNotes || {};
     const leafToIndex = pool.leafToIndex || {};
 
@@ -152,6 +167,7 @@ export function foldPoolState(
         already.spent = nullifierIsSpent(already.nullifier, spent);
         continue;
       }
+      if (theirs.has(cm)) continue; // already proven to be somebody else's
       const blob = notes[cm];
       if (!blob) continue;
 
@@ -159,7 +175,9 @@ export function foldPoolState(
       try {
         note = JSON.parse(decryptMessage(blob, keys.privateKey, network));
       } catch {
-        continue; // somebody else's note — the common case
+        // Somebody else's note — the common case, and permanently so.
+        theirs.add(cm);
+        continue;
       }
 
       /* nullifier = Poseidon(2, commitment, randomness, spendKey). The leading
@@ -266,6 +284,9 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
      for the NEXT pass, and re-rendering on every note found would mean a render
      per commitment on the first sync of a busy pool. */
   const found = useRef<ByNetwork<Claimed>>(blank<Claimed>(() => ({})));
+  /* Notes proven to be other people's — see the Foreign type. Refs, because
+     this is a cache, not something the UI renders. */
+  const strangers = useRef<ByNetwork<Foreign>>(blank<Foreign>(() => ({})));
 
   /** The noid (private) identity for a chain — the key notes are encrypted to. */
   const noidFor = useCallback(
@@ -289,7 +310,8 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
         const data = await fetchLatestState(network);
         await absorbTrees(network, data.poolStates || []);
         const claimed = found.current[network] || (found.current[network] = {});
-        const { utxos, balance } = foldPoolState(data, keys, network, claimed);
+        const theirs = strangers.current[network] || (strangers.current[network] = {});
+        const { utxos, balance } = foldPoolState(data, keys, network, claimed, theirs);
         setAllUTXOs((p) => ({ ...p, [network]: utxos }));
         setAllBalances((p) => ({ ...p, [network]: balance }));
         setErrors((p) => ({ ...p, [network]: null }));
@@ -303,8 +325,29 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
     [noidFor]
   );
 
+  /* ONE NETWORK AT A TIME, with a frame between them.
+
+     `Promise.all` fired all six at once, so their folds — decryption, poseidon,
+     tree inserts — landed back to back in a single burst on the JS thread, and
+     anything the user touched during that burst waited for all six. The total
+     work is the same either way; spreading it means the renderer gets a turn in
+     between, which is the difference between a poll you never notice and a poll
+     that eats a tap. Networks are independent, so order does not matter. */
   const forceSync = useCallback(async () => {
-    await Promise.all(NETWORK_IDS.map((n) => syncNetwork(n)));
+    for (const n of NETWORK_IDS) {
+      await syncNetwork(n);
+      await new Promise<void>((r) => {
+        let done = false;
+        const fin = () => {
+          if (!done) {
+            done = true;
+            r();
+          }
+        };
+        requestAnimationFrame(fin);
+        setTimeout(fin, 50); // rAF does not fire in the background
+      });
+    }
     setFirstSyncDone(true);
   }, [syncNetwork]);
 
@@ -313,6 +356,7 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
   const sessionKey = wallet?.noidAccount?.publicKey ?? null;
   useEffect(() => {
     found.current = blank<Claimed>(() => ({}));
+    strangers.current = blank<Foreign>(() => ({}));
     setAllBalances(blank(() => "0.0000"));
     setAllUTXOs(blank<UTXO[]>(() => []));
     setErrors(blank<string | null>(() => null));

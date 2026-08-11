@@ -28,6 +28,7 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
+  InteractionManager,
   Easing,
   Keyboard,
   Linking,
@@ -45,8 +46,8 @@ import { useWallet } from "../../context/WalletContext";
 import { explorerTxUrl, sendNative } from "../../lib/rpc";
 import { NETWORKS, type NetworkId } from "../../lib/networks";
 import {
-  hydrateAddressBook,
-  hydrateNoidAddressBook,
+  hydrateAddressBookFor,
+  hydrateNoidAddressBookFor,
   recentRecipientsFor,
   saveOpenTx,
   updateOpenTx,
@@ -183,13 +184,20 @@ export default memo(function SendModal({
       wallet?.suiNoidAccount?.publicKey,
       wallet?.aptosNoidAccount?.publicKey,
     ].filter(Boolean) as string[];
-    void Promise.all([hydrateAddressBook(senders), hydrateNoidAddressBook(noidKeys)]).then(
-      () => alive && setBookTick((n) => n + 1)
-    );
+    /* AFTER THE SHEET HAS FINISHED OPENING. Recents are a convenience; making
+       the open animation wait on storage and RPC is how a modal comes to feel
+       like it takes two seconds to appear. */
+    const task = InteractionManager.runAfterInteractions(() => {
+      void Promise.all([
+        hydrateAddressBookFor(network, senders),
+        hydrateNoidAddressBookFor(network, noidKeys),
+      ]).then(() => alive && setBookTick((n) => n + 1));
+    });
     return () => {
       alive = false;
+      task.cancel();
     };
-  }, [open, entries, wallet]);
+  }, [open, entries, wallet, network]);
 
   const recents = useMemo(
     () => (open ? recentRecipientsFor(network) : []),

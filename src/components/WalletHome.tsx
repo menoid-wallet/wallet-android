@@ -85,6 +85,8 @@ export default function WalletHome({
   const [tab, setTab] = useState<Tab>("wallet");
   const [accountsOpen, setAccountsOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  /* Measured, so the settings overlay starts exactly under the header. */
+  const [headerH, setHeaderH] = useState(0);
   /* THE COIN PAGE IS SHARED BY BOTH MODES and therefore lives here.
      Open Monad in open mode, switch to noid, and you should land on Monad's
      private page — or on the register page if that chain is not bound yet.
@@ -205,7 +207,9 @@ export default function WalletHome({
         },
       ]}>
       {/* ─── Header ─── */}
-      <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
+      <View
+        onLayout={(e) => setHeaderH(e.nativeEvent.layout.height)}
+        style={[styles.header, { paddingTop: insets.top + 12 }]}>
         <Animated.View style={[StyleSheet.absoluteFill, { opacity: Animated.subtract(1, mixN) }]}>
           <LinearGradient
             colors={HEADER_WASH.open as unknown as readonly [string, string, ...string[]]}
@@ -253,7 +257,7 @@ export default function WalletHome({
         {/* Settings — flips to a close glyph while settings is open */}
         <Pressable
           onPress={() => setTab(settingsOpen ? "wallet" : "settings")}
-          hitSlop={8}
+          hitSlop={{ top: 14, bottom: 14, left: 16, right: 12 }}
           style={({ pressed }) => [pressed && styles.pressed]}>
           <Animated.View
             style={[
@@ -278,19 +282,21 @@ export default function WalletHome({
       </View>
 
       {/* ─── Body ─── */}
-      {settingsOpen ? (
-        <ScrollView
-          style={styles.body}
-          contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
-          showsVerticalScrollIndicator={false}>
-          <SettingsView
-            isNoid={isNoid}
-            onLock={onLock}
-            onFeedback={() => setFeedbackOpen(true)}
-          />
-        </ScrollView>
-      ) : (
-        /* The carousel. Android's own scroller runs the drag, the fling and the
+      {(
+        /* ALWAYS MOUNTED, even behind settings.
+
+           Settings used to REPLACE this, and that was expensive in two ways.
+           Tearing down both mode views — every token bar, the chart, the pool
+           subscriptions — and rebuilding them on close is what made opening
+           settings hang for seconds. And with the pager unmounted, `modePage`
+           (which IS the theme, see lib/modeMotion) had no scroll events to
+           track, so it drifted out of step with `mode` and settings came up
+           wearing the other mode's colours over a stuck background.
+
+           So settings is an OVERLAY now. Nothing unmounts, nothing re-derives,
+           and the sky underneath stays exactly where it was.
+
+           The carousel. Android's own scroller runs the drag, the fling and the
            snap, and `onModeScroll` feeds its offset to the native animation
            driver — which is why the sky can follow your thumb without costing
            the JS thread a single frame. See lib/modeMotion. */
@@ -301,13 +307,22 @@ export default function WalletHome({
           bounces={false}
           overScrollMode="never"
           showsHorizontalScrollIndicator={false}
-          scrollEnabled={!coinOpen && !accountsOpen}
+
+          /* Locked while settings covers it — the overlay is box-none so a
+             drag would otherwise reach the pager underneath and switch mode
+             behind the settings screen. */
+          scrollEnabled={!coinOpen && !accountsOpen && !settingsOpen}
           scrollEventThrottle={16}
           onScroll={onModeScroll}
           onMomentumScrollEnd={(e) => onPagerSettled(e.nativeEvent.contentOffset.x)}
           onScrollEndDrag={(e) => onPagerSettled(e.nativeEvent.contentOffset.x)}
           contentOffset={{ x: isNoid ? width : 0, y: 0 }}
-          style={styles.body}>
+          /* HIDDEN, not covered, while settings is up. Painting an opaque
+             panel over it would flatten the sky — the grid, the sparkles and
+             the clouds all live in the backdrop below. Hiding the carousel
+             lets that real animated sky show through settings, and costs
+             nothing to restore because nothing unmounted. */
+          style={[styles.body, settingsOpen && styles.hidden]}>
           {/* OpenModeView owns its own scrolling: it is two pages on a slide,
               and each needs to scroll on its own. */}
           <View style={{ width }}>
@@ -326,6 +341,20 @@ export default function WalletHome({
             />
           </View>
         </Animated.ScrollView>
+      )}
+
+      {/* Settings sits ON TOP of the carousel — see the note above. It is only
+          rendered while open, so its own subtree costs nothing the rest of the
+          time, but the wallet underneath is never torn down. */}
+      {settingsOpen && (
+        <View style={[StyleSheet.absoluteFill, { top: headerH }]} pointerEvents="box-none">
+          <ScrollView
+            style={styles.body}
+            contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
+            showsVerticalScrollIndicator={false}>
+            <SettingsView isNoid={isNoid} onLock={onLock} onFeedback={() => setFeedbackOpen(true)} />
+          </ScrollView>
+        </View>
       )}
 
       <AccountsSheet open={accountsOpen} onClose={() => setAccountsOpen(false)} isNoid={isNoid} />
@@ -499,7 +528,7 @@ function SettingsView({
 /* ─── glyphs ─── */
 function GearGlyph({ color }: { color: string }) {
   return (
-    <Svg width={17} height={17} viewBox="0 0 24 24" opacity={0.9}>
+    <Svg width={21} height={21} viewBox="0 0 24 24" opacity={0.9}>
       <Path
         fill={color}
         d="M12 15.5A3.5 3.5 0 0 1 8.5 12A3.5 3.5 0 0 1 12 8.5a3.5 3.5 0 0 1 3.5 3.5a3.5 3.5 0 0 1-3.5 3.5m7.43-2.53c.04-.32.07-.64.07-.97c0-.33-.03-.66-.07-1l2.11-1.63c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.31-.61-.22l-2.49 1c-.52-.39-1.06-.73-1.69-.98l-.37-2.65A.506.506 0 0 0 14 2h-4c-.25 0-.46.18-.5.42l-.37 2.65c-.63.25-1.17.59-1.69.98l-2.49-1c-.22-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64L4.57 11c-.04.34-.07.67-.07 1c0 .33.03.65.07.97l-2.11 1.66c-.19.15-.25.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1.01c.52.4 1.06.74 1.69.99l.37 2.65c.04.24.25.42.5.42h4c.25 0 .46-.18.5-.42l.37-2.65c.63-.26 1.17-.59 1.69-.99l2.49 1.01c.22.08.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.66Z"
@@ -510,7 +539,7 @@ function GearGlyph({ color }: { color: string }) {
 
 function CloseGlyph({ color }: { color: string }) {
   return (
-    <Svg width={12} height={12} viewBox="0 0 12 12">
+    <Svg width={14} height={14} viewBox="0 0 12 12">
       <Path
         d="M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5"
         stroke={color}
@@ -545,9 +574,12 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.72, transform: [{ scale: 0.95 }] },
 
   gear: {
-    height: 32,
-    width: 32,
-    borderRadius: 16,
+    /* 32 was a precise target for a control people reach for constantly, and
+       the gesture bar and screen edge both crowd it. 40 plus the hitSlop below
+       gives roughly a 64pt touch area — comfortably past the 48pt minimum. */
+    height: 40,
+    width: 40,
+    borderRadius: 20,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
@@ -622,6 +654,7 @@ const styles = StyleSheet.create({
      and the extra 20 here made the lock button 40pt narrower than the mode and
      feedback cards above it. The top margin is what stops it collapsing into
      the feedback card — it used to sit flush against it. */
+  hidden: { opacity: 0 },
   lockBay: { marginTop: 22, paddingBottom: 30 },
   lock: {
     flexDirection: "row",

@@ -27,6 +27,7 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
+  InteractionManager,
   Easing,
   Pressable,
   ScrollView,
@@ -47,8 +48,8 @@ import {
   hydrateMaskTxns,
   loadMaskTxns,
   saveMaskTx,
-  hydrateAddressBook,
-  hydrateNoidAddressBook,
+  hydrateAddressBookFor,
+  hydrateNoidAddressBookFor,
   recentRecipientsFor,
   subscribeTxns,
   type TxEntry,
@@ -417,11 +418,18 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
       wallet?.suiNoidAccount?.publicKey,
       wallet?.aptosNoidAccount?.publicKey,
     ].filter(Boolean) as string[];
-    void Promise.all([hydrateAddressBook(senders), hydrateNoidAddressBook(noidKeys)]).then(
-      () => alive && setBookTick((n) => n + 1)
-    );
+    /* Deferred past the sheet's open animation, and scoped to this chain —
+       see SendModal for why both matter. */
+    const task = InteractionManager.runAfterInteractions(() => {
+      const net = shownCoin ?? "monad";
+      void Promise.all([
+        hydrateAddressBookFor(net, senders),
+        hydrateNoidAddressBookFor(net, noidKeys),
+      ]).then(() => alive && setBookTick((n) => n + 1));
+    });
     return () => {
       alive = false;
+      task.cancel();
     };
   }, [showNoidSend, entries, wallet, shownCoin]);
 

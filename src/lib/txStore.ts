@@ -98,6 +98,10 @@ function persist(key: string) {
    had their turn to claim from it yet. */
 const EVM_NETWORKS: NetworkId[] = ["monad", "sepolia", "base_sepolia"];
 
+/** The EVM chains share an address space, so they share an address book. */
+const EVM: NetworkId[] = EVM_NETWORKS;
+const isEvm = (n: NetworkId) => EVM.includes(n);
+
 function legacyKey(address: string) {
   return `openaccount:${address.toLowerCase()}`;
 }
@@ -255,8 +259,6 @@ export function recentRecipients(limit = 8): RecentRecipient[] {
 }
 
 /** The EVM chains share an address space, so they share an address book. */
-const EVM: NetworkId[] = ["monad", "sepolia", "base_sepolia"] as NetworkId[];
-const isEvm = (n: NetworkId) => EVM.includes(n);
 
 /**
  * Everyone you have paid ON THIS CHAIN — public sends AND private sends both.
@@ -304,6 +306,36 @@ export async function hydrateNoidAddressBook(noidKeys: string[]): Promise<void> 
  * above can see them. Cheap after the first pass — `hydrateOpenTxns`
  * short-circuits on anything already cached.
  */
+/**
+ * Hydrate only the chains an address book will actually be read for.
+ *
+ * The unscoped version below walks every account against every network, and a
+ * network that has never been hydrated runs `claimLegacy` — which, on the EVMs,
+ * is a SEQUENTIAL RPC ROUND TRIP PER LEGACY TRANSACTION. Opening a send modal
+ * therefore fired a burst of serial network calls for five chains whose
+ * addresses that modal cannot even display. Since `recentRecipientsFor` is
+ * chain-scoped, so is this.
+ */
+export async function hydrateAddressBookFor(
+  network: NetworkId,
+  addresses: string[]
+): Promise<void> {
+  const nets = isEvm(network) ? EVM : [network];
+  await Promise.all(
+    addresses.filter(Boolean).flatMap((a) => nets.map((n) => hydrateOpenTxns(a, n).catch(() => [])))
+  );
+}
+
+export async function hydrateNoidAddressBookFor(
+  network: NetworkId,
+  noidKeys: string[]
+): Promise<void> {
+  const nets = isEvm(network) ? EVM : [network];
+  await Promise.all(
+    noidKeys.filter(Boolean).flatMap((k) => nets.map((n) => hydrateMaskTxns(k, n).catch(() => [])))
+  );
+}
+
 export async function hydrateAddressBook(addresses: string[]): Promise<void> {
   const nets = Object.keys(NETWORKS) as NetworkId[];
   await Promise.all(
