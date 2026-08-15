@@ -5,6 +5,7 @@
  *   password → set the encryption password (derive → encrypt → store)
  * On success it calls onCreated(), and App hands over to the lock screen.
  */
+import { track } from "../../services/analytics";
 import React, { useCallback, useRef, useState } from "react";
 import { View, Text, Pressable, StyleSheet } from "react-native";
 import * as Clipboard from "expo-clipboard";
@@ -95,6 +96,7 @@ export default function CreateWallet({
     if (password !== confirmPw) return setPwError("Passwords don't match.");
     setPwError("");
     setSaving(true);
+    const t0 = Date.now();
     try {
       setSavingLabel("Deriving keys…");
       // Let React paint the spinner FIRST. Key derivation and PBKDF2 are
@@ -105,8 +107,12 @@ export default function CreateWallet({
       setSavingLabel("Encrypting…");
       await new Promise((r) => setTimeout(r, 50));
       await createInitialState({ name: label.trim() || "Account", password, fullWallet });
+      /* Key derivation is the slowest thing in onboarding; the duration here
+         is what tells us whether the wallet feels broken on a cheap phone. */
+      track("wallet_created", { status: "success", durationMs: Date.now() - t0 });
       onCreated();
     } catch (e: any) {
+      track("wallet_created", { status: "failure", errorKind: "derive_or_encrypt" });
       setPwError(e?.message ?? "Unknown error");
       setSaving(false);
     }

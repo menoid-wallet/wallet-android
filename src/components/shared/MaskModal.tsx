@@ -52,6 +52,7 @@ import AnimatedLogo from "../brand/AnimatedLogo";
 import CloudChip from "../brand/CloudChip";
 import CloudVoyage from "./CloudVoyage";
 import LiquidSheet from "./LiquidSheet";
+import { track } from "../../services/analytics";
 import { RainFar, RainNear } from "../brand/Rain";
 import { FONT } from "../../theme/tokens";
 
@@ -373,6 +374,7 @@ export default memo(function MaskModal({
 
   const start = useCallback(async () => {
     if (!canMask) return;
+    const t0 = Date.now();
     setErr("");
     setPhase("proving");
 
@@ -408,6 +410,21 @@ export default memo(function MaskModal({
       setPhase("success");
       onDone?.();
     } catch (e: any) {
+      /* The error KIND, never the message — service messages interpolate
+         amounts and addresses. */
+      const msg = String(e?.message ?? "");
+      track(copy.cta.toLowerCase() + "_failed", {
+        status: "failure",
+        network,
+        durationMs: Date.now() - t0,
+        errorKind: /not enough/i.test(msg)
+          ? "insufficient"
+          : /merkle/i.test(msg)
+            ? "no_merkle_proof"
+            : /relayer/i.test(msg)
+              ? "relayer"
+              : "unknown",
+      });
       setErr(e?.message ?? "Masking failed.");
       setPhase("error");
     }

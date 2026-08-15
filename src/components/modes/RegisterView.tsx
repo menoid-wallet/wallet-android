@@ -26,6 +26,7 @@ import { getBalance } from "../../lib/rpc";
 import { CHAINS, type ChainMeta } from "../../lib/chains";
 import { type NetworkId } from "../../lib/networks";
 import { registerOnChain, verifyAndRepair } from "../../services/register";
+import { track } from "../../services/analytics";
 import { setChainRegistered } from "../../lib/registration";
 import { FONT } from "../../theme/tokens";
 
@@ -115,8 +116,13 @@ export default function RegisterView({
     for (const id of selected) {
       setStates((s) => ({ ...s, [id]: "registering" }));
       setErrors((e) => ({ ...e, [id]: "" }));
+      const t0 = Date.now();
       try {
         await registerOnChain(wallet, id);
+        /* Per chain, because registration succeeds and fails per chain — this
+           is the report that would have surfaced the Sui and Aptos breakage
+           without anyone having to notice it by hand. */
+        track("register", { status: "success", network: id, durationMs: Date.now() - t0 });
         setStates((s) => ({ ...s, [id]: "done" }));
         anyDone = true;
       } catch (err: any) {
@@ -128,6 +134,16 @@ export default function RegisterView({
           setStates((s) => ({ ...s, [id]: "done" }));
           anyDone = true;
         } else {
+          track("register", {
+            status: "failure",
+            network: id,
+            durationMs: Date.now() - t0,
+            errorKind: /insufficient|balance/i.test(msg)
+              ? "no_gas"
+              : /registry|fetch|network/i.test(msg)
+                ? "backend_unreachable"
+                : "unknown",
+          });
           setStates((s) => ({ ...s, [id]: "error" }));
           setErrors((e) => ({ ...e, [id]: msg }));
         }

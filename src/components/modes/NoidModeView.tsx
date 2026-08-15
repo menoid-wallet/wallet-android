@@ -71,6 +71,7 @@ import { executeNoidSend, feePerCallFor, resolveRecipient, type Recipient } from
 import RegisterView from "./RegisterView";
 import type { ModeViewProps } from "./OpenModeView";
 import { FONT } from "../../theme/tokens";
+import { track } from "../../services/analytics";
 
 const INK = "#F4EEFF";
 const INK_RGB = "244,238,255";
@@ -318,6 +319,7 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
             ? wallet.aptosNoidAccount
             : wallet.noidAccount;
       if (!base || !noid) throw new Error(`No ${a.network} account in this wallet.`);
+      const t0 = Date.now();
       const out = await executeMask({
         depositAmount: a.amount,
         fee: a.fee,
@@ -333,6 +335,10 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
          note — the open log is about the public address and this money has
          just left it. `a.amount` is the gross; what was hidden is the gross
          minus the relayer's cut. */
+      /* One proof, always — a deposit spends no notes, so there is no batch
+         shape to report here, only how long the proof took. */
+      track("hide", { status: "success", network: a.network, durationMs: Date.now() - t0 });
+
       const hidden = Math.max(0, Number(a.amount) - Number(a.fee));
       saveMaskTx(noid.publicKey, a.network, {
         type: "mask",
@@ -367,6 +373,10 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
           poolId: u.poolId,
         }));
 
+      /* Batch SHAPE and TIME only — never the notes themselves. `onBatch` is
+         the only place the batch count is known to the UI. */
+      const t0 = Date.now();
+      let batches = 0;
       const out = await executeUnmask({
         withdrawAmount: a.amount,
         toAddress: base,
@@ -379,8 +389,19 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
           ownerAddress: base,
         },
         getMerkleProof: (poolId, leafIndex) => getMerkleProof(a.network, poolId, leafIndex),
-        onBatch: () => a.onProving?.(),
+        onBatch: (_n, total) => {
+          batches = total;
+          a.onProving?.();
+        },
         onSending: a.onSending,
+      });
+
+      track("unhide", {
+        status: "success",
+        network: a.network,
+        durationMs: Date.now() - t0,
+        batchCount: batches,
+        props: { notes: notes.length },
       });
 
       saveMaskTx(noid.publicKey, a.network, {
@@ -480,6 +501,8 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
          their real wallet instead — same modal, different operation, and the
          fee the modal quoted already switched to the withdraw fee. The send
          still hides the SENDER; only the receiving side is public. */
+      const t0 = Date.now();
+      let batches = 0;
       const out = recipient
         ? await executeNoidSend({
         amount: a.amount,
@@ -493,7 +516,10 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
           ownerAddress: base,
         },
         getMerkleProof: (poolId, leafIndex) => getMerkleProof(a.network, poolId, leafIndex),
-        onBatch: () => a.onProving?.(),
+        onBatch: (_n, total) => {
+          batches = total;
+          a.onProving?.();
+        },
         onSending: a.onSending,
           })
         : await executeUnmask({
@@ -508,9 +534,24 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
               ownerAddress: base,
             },
             getMerkleProof: (poolId, leafIndex) => getMerkleProof(a.network, poolId, leafIndex),
-            onBatch: () => a.onProving?.(),
+            onBatch: (_n, total) => {
+              batches = total;
+              a.onProving?.();
+            },
             onSending: a.onSending,
           });
+
+      /* `mode` records WHICH send happened — a private transfer, or the
+         withdraw fallback for an unregistered recipient. That split is the
+         single most useful thing to know about this flow, and it says nothing
+         about who the recipient was. */
+      track("noid_send", {
+        status: "success",
+        network: a.network,
+        durationMs: Date.now() - t0,
+        batchCount: batches,
+        props: { mode: recipient ? "private_transfer" : "withdraw_fallback", notes: notes.length },
+      });
 
       saveMaskTx(noid.publicKey, a.network, {
         type: "mask",

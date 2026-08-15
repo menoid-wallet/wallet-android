@@ -24,6 +24,7 @@
  * always begins at "locked" once a wallet exists.
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { initAnalytics, track } from "./src/services/analytics";
 import { Animated, View, Image, StyleSheet, InteractionManager } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import * as SplashScreen from "expo-splash-screen";
@@ -128,6 +129,9 @@ export default function App() {
 
   useEffect(() => {
     isOnboarded().then((yes) => setInitial(yes ? "locked" : "onboarding"));
+    /* Reports the install and starts the flush timer. Idempotent, so it runs on
+       every launch — see services/analytics. */
+    void initAnalytics({ appVersion: "0.0.1" });
   }, []);
 
   const loaded = fontsLoaded && markReady && initial !== null;

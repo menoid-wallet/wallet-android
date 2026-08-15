@@ -6,6 +6,7 @@
  *   password → encrypt + store
  * On success it calls onImported(), and App hands over to the lock screen.
  */
+import { track } from "../../services/analytics";
 import React, { useCallback, useRef, useState } from "react";
 import { View, Text, Pressable, StyleSheet } from "react-native";
 import Svg, { Path } from "react-native-svg";
@@ -125,6 +126,7 @@ export default function ImportWallet({
     if (password !== confirmPw) return setPwError("Passwords don't match.");
     setPwError("");
     setSaving(true);
+    const t0 = Date.now();
     try {
       // let the spinner paint before the blocking crypto (see CreateWallet)
       await new Promise((r) => setTimeout(r, 50));

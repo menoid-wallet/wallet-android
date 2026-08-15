@@ -35,6 +35,7 @@ import {
 import { getItem, setItem } from "../lib/storage";
 import type { StoredWallet } from "../crypto/walletCrypto";
 import type { NetworkId } from "../lib/networks";
+import { track } from "../services/analytics";
 
 const MODE_KEY = "menoid_view_mode";
 
@@ -111,6 +112,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   sessionRef.current = session;
 
   const unlock = useCallback(async (password: string): Promise<boolean> => {
+    const t0 = Date.now();
     const state = await readWalletsState();
     if (!state) return false;
     try {
@@ -121,8 +123,16 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         active: Math.min(state.active, wallets.length - 1),
         password,
       });
+      /* Duration matters here: unlock runs the KDF, and if that is slow on real
+         hardware the whole app feels slow before it has drawn anything. */
+      track("unlock", {
+        status: "success",
+        durationMs: Date.now() - t0,
+        props: { wallets: wallets.length },
+      });
       return true;
     } catch {
+      track("unlock", { status: "failure", errorKind: "wrong_password" });
       return false; // wrong password (AES-GCM auth tag failed)
     }
   }, []);

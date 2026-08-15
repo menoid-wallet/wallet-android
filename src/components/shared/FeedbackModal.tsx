@@ -27,6 +27,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Path } from "react-native-svg";
 import CloudChip from "../brand/CloudChip";
 import LiquidSheet from "./LiquidSheet";
+import { track } from "../../services/analytics";
 import { FONT } from "../../theme/tokens";
 import { rgba, themeTokens } from "../../theme/useThemeTokens";
 import { getFeedbackRecord, markFeedbackSubmitted } from "../../lib/feedback";
@@ -146,6 +147,12 @@ export default function FeedbackModal({
 
     try {
       await submitFeedback(payload);
+      /* Which questions people actually answer tells us whether the survey is
+         too long. The ANSWERS live in the Feedback collection, not here. */
+      track("feedback_submitted", {
+        status: "success",
+        props: { answered: Object.keys(payload).length },
+      });
       await markFeedbackSubmitted(email.trim());
       setDoneEmail(email.trim());
       setView("done");

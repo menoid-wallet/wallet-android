@@ -43,6 +43,7 @@ import { ethers, isAddress } from "ethers";
 import Svg, { Path } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWallet } from "../../context/WalletContext";
+import { track } from "../../services/analytics";
 import { explorerTxUrl, sendNative } from "../../lib/rpc";
 import { NETWORKS, type NetworkId } from "../../lib/networks";
 import {
@@ -254,8 +255,12 @@ export default memo(function SendModal({
       requestAnimationFrame(() => requestAnimationFrame(() => r()))
     );
 
+    const t0 = Date.now();
     try {
       const r = await sendNative(privateKey, to.trim(), value, network);
+      /* Open mode is public anyway, but the hash and the recipient still have
+         no business in our analytics — duration and outcome do. */
+      track("open_send", { status: "success", network, durationMs: Date.now() - t0 });
       setTxHash(r.hash);
       setPhase("success");
       onSent?.(r.hash);
