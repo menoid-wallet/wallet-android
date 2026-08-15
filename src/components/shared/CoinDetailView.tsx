@@ -31,6 +31,7 @@ import type { ChartRange, PriceInfo } from "../../services/prices";
 import { useTokenChart } from "../../lib/usePrices";
 import LiveAreaChart from "./LiveAreaChart";
 import { useDeferredMount } from "../../lib/useDeferredMount";
+import RefreshDim from "./RefreshDim";
 import { FONT } from "../../theme/tokens";
 import { rgba, themeTokens } from "../../theme/useThemeTokens";
 
@@ -311,16 +312,26 @@ export default function CoinDetailView({
             <Text style={[styles.balanceLabel, { color: rgba(t.inkRgb, 0.4) }]}>
               {balanceLabel.toUpperCase()}
             </Text>
-            <Text style={[styles.balanceValue, { color: t.ink }]}>
-              {fmtBalance(balance)}
-              <Text style={[styles.balanceSymbol, { color: rgba(t.inkRgb, 0.4) }]}> {chain.symbol}</Text>
-            </Text>
+            {/* The figure dims on a manual refresh here too — the coin page is
+                where people watch for money arriving, so it is the last place
+                that should look static while a reload runs. */}
+            <RefreshDim scope={isLightPage ? "open" : "noid"}>
+              <Text style={[styles.balanceValue, { color: t.ink }]}>
+                {fmtBalance(balance)}
+                <Text style={[styles.balanceSymbol, { color: rgba(t.inkRgb, 0.4) }]}>
+                  {" "}
+                  {chain.symbol}
+                </Text>
+              </Text>
+            </RefreshDim>
           </View>
           <View style={styles.balanceRight}>
             <Text style={[styles.balanceLabel, { color: rgba(t.inkRgb, 0.4) }]}>VALUE</Text>
-            <Text style={[styles.balanceUsd, { color: rgba(t.inkRgb, 0.75) }]}>
-              {fmtCurrency(usdValue)}
-            </Text>
+            <RefreshDim scope={isLightPage ? "open" : "noid"}>
+              <Text style={[styles.balanceUsd, { color: rgba(t.inkRgb, 0.75) }]}>
+                {fmtCurrency(usdValue)}
+              </Text>
+            </RefreshDim>
           </View>
         </View>
       </BlockIn>
@@ -333,11 +344,11 @@ export default function CoinDetailView({
           ))}
       </BlockIn>
 
-      {/* ── Ship's Log ── */}
+      {/* ── Transaction history ── */}
       <BlockIn delay={360} style={styles.logBay}>
         <View style={styles.logHead}>
           <View style={[styles.logRule, { backgroundColor: rgba(t.inkRgb, 0.12) }]} />
-          <Text style={[styles.logTitle, { color: rgba(t.inkRgb, 0.4) }]}>SHIP'S LOG</Text>
+          <Text style={[styles.logTitle, { color: rgba(t.inkRgb, 0.4) }]}>TRANSACTION HISTORY</Text>
           <View style={[styles.logRule, { backgroundColor: rgba(t.inkRgb, 0.12) }]} />
         </View>
         {logReady ? shipsLog : null}

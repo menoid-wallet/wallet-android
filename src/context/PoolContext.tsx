@@ -47,7 +47,11 @@ import { PoolTree, type MerkleProof } from "../lib/merkleTree";
 import { useWallet } from "./WalletContext";
 import { NETWORK_IDS, type NetworkId } from "../lib/networks";
 
-const POLL_MS = 10_000;
+/* Fast enough that a note arriving feels immediate, which is affordable now
+   that a poll only decrypts commitments it has never seen — see the Foreign
+   cache in the model. Every one of these is SILENT: background syncing does
+   not go through withRefresh, so the numbers never pulse on their own. */
+const POLL_MS = 4_000;
 
 export interface UTXO {
   commitment: string;
@@ -87,7 +91,12 @@ interface PoolContextValue {
   errors: ByNetwork<string | null>;
   /** True until the first pass over every chain has finished. */
   firstSyncDone: boolean;
-  forceSync: () => Promise<void>;
+  /**
+   * Resync the pool. `parallel` fires every network at once instead of one at
+   * a time — for a refresh the user is watching, where the wait is the whole
+   * point and spreading the work only makes them wait longer.
+   */
+  forceSync: (opts?: { parallel?: boolean }) => Promise<void>;
 }
 
 const PoolContext = createContext<PoolContextValue | null>(null);
@@ -280,13 +289,48 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
   );
   const [firstSyncDone, setFirstSyncDone] = useState(false);
 
-  /* commitment → UTXO, per network per pool. A ref, not state: it is a cache
-     for the NEXT pass, and re-rendering on every note found would mean a render
-     per commitment on the first sync of a busy pool. */
-  const found = useRef<ByNetwork<Claimed>>(blank<Claimed>(() => ({})));
-  /* Notes proven to be other people's — see the Foreign type. Refs, because
-     this is a cache, not something the UI renders. */
-  const strangers = useRef<ByNetwork<Foreign>>(blank<Foreign>(() => ({})));
+  /* ── the caches, all keyed BY ACCOUNT ─────────────────────────────────────
+     
+     THE POOL IS SHARED; THE READING OF IT IS NOT. Every account sees the same
+     commitments on chain — what differs is which of them each account can
+     decrypt. So the raw pool state is fetched once per network and reused by
+     every account, while the decryption results are kept per account.
+
+     This used to be flat, and switching account threw all of it away: balances
+     reset to zero, the whole pool was refetched, and every note was
+     trial-decrypted again from scratch. Switching back and forth paid that cost
+     every single time, for data that had not changed. Now a switch is a lookup.
+
+     Refs, not state: caches for the next pass. Re-rendering on every note found
+     would mean a render per commitment on the first sync of a busy pool. */
+
+  /** Last raw state per network — shared by all accounts. */
+  const poolData = useRef<Partial<Record<NetworkId, any>>>({});
+  /** account → network → commitment → UTXO */
+  const found = useRef<Record<string, ByNetwork<Claimed>>>({});
+  /** account → network → notes proven to belong to someone else */
+  const strangers = useRef<Record<string, ByNetwork<Foreign>>>({});
+  /** account → network → the folded results, so a switch can paint instantly */
+  const balanceCache = useRef<Record<string, ByNetwork<string>>>({});
+  const utxoCache = useRef<Record<string, ByNetwork<UTXO[]>>>({});
+
+  /** Identity of the account whose numbers are currently on screen. */
+  const acctKey = wallet?.noidAccount?.publicKey ?? "";
+  const acctRef = useRef(acctKey);
+  acctRef.current = acctKey;
+
+  const cachesFor = useCallback((acct: string) => {
+    if (!found.current[acct]) found.current[acct] = blank<Claimed>(() => ({}));
+    if (!strangers.current[acct]) strangers.current[acct] = blank<Foreign>(() => ({}));
+    if (!balanceCache.current[acct]) balanceCache.current[acct] = blank(() => "0.0000");
+    if (!utxoCache.current[acct]) utxoCache.current[acct] = blank<UTXO[]>(() => []);
+    return {
+      claimed: found.current[acct],
+      theirs: strangers.current[acct],
+      balances: balanceCache.current[acct],
+      utxos: utxoCache.current[acct],
+    };
+  }, []);
 
   /** The noid (private) identity for a chain — the key notes are encrypted to. */
   const noidFor = useCallback(
@@ -305,15 +349,25 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
       const keys = noidFor(network);
       if (!keys?.privateKey || !keys?.zkSecretKey) return;
 
+      const acct = acctRef.current;
       setSyncing((s) => ({ ...s, [network]: true }));
       try {
         const data = await fetchLatestState(network);
+        poolData.current[network] = data; // shared: any account can fold this
         await absorbTrees(network, data.poolStates || []);
-        const claimed = found.current[network] || (found.current[network] = {});
-        const theirs = strangers.current[network] || (strangers.current[network] = {});
-        const { utxos, balance } = foldPoolState(data, keys, network, claimed, theirs);
-        setAllUTXOs((p) => ({ ...p, [network]: utxos }));
-        setAllBalances((p) => ({ ...p, [network]: balance }));
+
+        const c = cachesFor(acct);
+        const { utxos, balance } = foldPoolState(data, keys, network, c.claimed[network], c.theirs[network]);
+        c.balances[network] = balance;
+        c.utxos[network] = utxos;
+
+        /* Only touch the screen if this is still the account being shown. A
+           sync that started before a switch must not paint the old account's
+           balance over the new one. */
+        if (acctRef.current === acct) {
+          setAllUTXOs((p) => ({ ...p, [network]: utxos }));
+          setAllBalances((p) => ({ ...p, [network]: balance }));
+        }
         setErrors((p) => ({ ...p, [network]: null }));
       } catch (e: any) {
         console.error(`[PoolContext] sync failed for ${network}:`, e);
@@ -333,7 +387,19 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
      work is the same either way; spreading it means the renderer gets a turn in
      between, which is the difference between a poll you never notice and a poll
      that eats a tap. Networks are independent, so order does not matter. */
-  const forceSync = useCallback(async () => {
+  const forceSync = useCallback(async (opts?: { parallel?: boolean }) => {
+    /* A MANUAL refresh runs all six at once. The serialisation below exists so
+       a BACKGROUND poll cannot monopolise the JS thread while somebody is
+       tapping — but when the tap WAS "reload now", pacing it means the dim
+       outlives the number it belongs to. The balance you were watching lands
+       first and then sits there greyed out waiting for five other chains, which
+       is exactly the second of dead time this avoids. */
+    if (opts?.parallel) {
+      await Promise.all(NETWORK_IDS.map((n) => syncNetwork(n)));
+      setFirstSyncDone(true);
+      return;
+    }
+
     for (const n of NETWORK_IDS) {
       await syncNetwork(n);
       await new Promise<void>((r) => {
@@ -351,17 +417,68 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
     setFirstSyncDone(true);
   }, [syncNetwork]);
 
-  /* A different wallet is a different set of notes — everything found for the
-     old one has to go, or account 2 inherits account 1's balance. */
+  /**
+   * Switching account SHOWS that account, it does not rebuild it.
+   *
+   * The old version cleared every cache, reset the figures to zero and resynced
+   * from scratch on every switch — so going back to an account you had already
+   * opened re-fetched the same pool and re-decrypted the same notes to arrive
+   * at the number it had just thrown away.
+   *
+   * Now each account keeps its own results, so a switch paints them
+   * immediately. Anything that arrived while you were elsewhere is folded in
+   * from the pool state we already hold, WITHOUT a network round trip, and only
+   * the commitments this account has never seen are decrypted — the rest are
+   * answered from its caches. The regular poll then keeps it current.
+   *
+   * A brand-new account still has to read the pool once; there is no way around
+   * that, since only its keys can tell which notes are its own. But it happens
+   * once per account, not once per switch.
+   */
   const sessionKey = wallet?.noidAccount?.publicKey ?? null;
   useEffect(() => {
-    found.current = blank<Claimed>(() => ({}));
-    strangers.current = blank<Foreign>(() => ({}));
-    setAllBalances(blank(() => "0.0000"));
-    setAllUTXOs(blank<UTXO[]>(() => []));
+    if (!sessionKey || !isUnlocked) {
+      setAllBalances(blank(() => "0.0000"));
+      setAllUTXOs(blank<UTXO[]>(() => []));
+      return;
+    }
+
+    const c = cachesFor(sessionKey);
+
+    /* Paint what this account already knows, this frame. */
+    setAllBalances({ ...c.balances });
+    setAllUTXOs({ ...c.utxos });
     setErrors(blank<string | null>(() => null));
-    setFirstSyncDone(false);
-    if (sessionKey && isUnlocked) void forceSync();
+
+    /* Then fold anything new out of the pool state already in memory — no
+       fetch, and cheap, because seen commitments short-circuit. */
+    let cancelled = false;
+    void (async () => {
+      for (const network of NETWORK_IDS) {
+        const data = poolData.current[network];
+        const keys = noidFor(network);
+        if (!data || !keys?.privateKey || !keys?.zkSecretKey) continue;
+        const { utxos, balance } = foldPoolState(
+          data,
+          keys,
+          network,
+          c.claimed[network],
+          c.theirs[network]
+        );
+        c.balances[network] = balance;
+        c.utxos[network] = utxos;
+        if (cancelled || acctRef.current !== sessionKey) return;
+        setAllBalances((p) => ({ ...p, [network]: balance }));
+        setAllUTXOs((p) => ({ ...p, [network]: utxos }));
+      }
+      if (!cancelled) setFirstSyncDone(true);
+      /* One fetch to catch whatever landed since the last poll. Silent. */
+      if (!cancelled) void forceSync();
+    })();
+
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionKey, isUnlocked]);
 

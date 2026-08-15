@@ -51,6 +51,8 @@ import { getBalance } from "../../lib/rpc";
 import { NETWORKS, type NetworkId } from "../../lib/networks";
 import { CHAINS, CHAIN_BY_ID } from "../../lib/chains";
 import { useTokenPrices } from "../../lib/usePrices";
+import { withRefresh } from "../../lib/refreshBus";
+import { useRefreshNonce, useRefreshBusy } from "../../lib/useRefresh";
 import {
   hydrateOpenTxns,
   loadOpenTxns,
@@ -58,6 +60,7 @@ import {
   type TxEntry,
 } from "../../lib/txStore";
 import AnimatedNumber from "../shared/AnimatedNumber";
+import RefreshDim from "../shared/RefreshDim";
 import InlineCopyButton from "../shared/InlineCopyButton";
 import CopyKeysButton from "../shared/CopyKeysButton";
 import TreasureCardShell, { CARD_RADIUS } from "../shared/TreasureCardShell";
@@ -69,7 +72,6 @@ import ComingSoonToast from "../shared/ComingSoonToast";
 import { COLORS, FONT } from "../../theme/tokens";
 import { rgba } from "../../theme/useThemeTokens";
 
-const POLL_MS = 6_000;
 const INK = COLORS.violetDeep;
 const INK_RGB = "78,47,142";
 
@@ -139,7 +141,7 @@ export default function OpenModeView({ activeCoin, setActiveCoin, registerClose 
   );
 
   /* The signing account for a chain. The three EVM networks share one — which
-     is exactly why the ship's log is keyed by address AND network, and not by
+     is exactly why the transaction history is keyed by address AND network, and not by
      address alone; see lib/txStore. */
   const accountFor = useCallback(
     (id: NetworkId) =>
@@ -175,15 +177,27 @@ export default function OpenModeView({ activeCoin, setActiveCoin, registerClose 
     });
   }, [wallet, addressFor]);
 
+  /* The header's refresh button. Reloads balances, the private pool and the
+     chart together, and reports back so the numbers stay in their loading look
+     until the slowest of them has actually finished. */
+  const refreshNonce = useRefreshNonce();
+  useEffect(() => {
+    if (refreshNonce === 0) return; // mount already fetches below
+    void withRefresh("open", () => fetchAllBalances());
+  }, [refreshNonce, fetchAllBalances]);
+
+  /* Loaded ONCE per wallet, and thereafter only when asked.
+
+     This used to poll every six seconds. Public balances do not change on their
+     own — they change when the user sends something, and that path refetches
+     itself — so the poll bought nothing and cost a burst of six RPC calls,
+     forever, competing with whatever the user was touching. The refresh button
+     covers the rare case where money arrived from somewhere else. */
   useEffect(() => {
     mountedRef.current = true;
     void fetchAllBalances();
-    const id = setInterval(() => {
-      if (AppState.currentState === "active") void fetchAllBalances();
-    }, POLL_MS);
     return () => {
       mountedRef.current = false;
-      clearInterval(id);
     };
   }, [fetchAllBalances]);
 
@@ -418,19 +432,24 @@ export default function OpenModeView({ activeCoin, setActiveCoin, registerClose 
                   />
                   <Text style={styles.featuredSymbol}>{featuredChain.symbol}</Text>
                 </View>
-                <Text style={styles.featuredUsd}>≈ {featuredUsdFormatted}</Text>
-                <Text style={styles.featuredTotal}>
-                  Total balance: <Text style={styles.featuredTotalValue}>{formattedTotalUsd}</Text>
-                </Text>
+                <RefreshDim scope="open">
+                  <Text style={styles.featuredUsd}>≈ {featuredUsdFormatted}</Text>
+                  <Text style={styles.featuredTotal}>
+                    Total balance:{" "}
+                    <Text style={styles.featuredTotalValue}>{formattedTotalUsd}</Text>
+                  </Text>
+                </RefreshDim>
               </View>
             ) : (
               <View style={styles.balanceBlock}>
-                <AnimatedNumber
-                  value={formattedTotalUsd}
-                  height={62}
-                  duration={850}
-                  textStyle={styles.totalNumber}
-                />
+                <RefreshDim scope="open">
+                  <AnimatedNumber
+                    value={formattedTotalUsd}
+                    height={62}
+                    duration={850}
+                    textStyle={styles.totalNumber}
+                  />
+                </RefreshDim>
               </View>
             )}
 
@@ -450,7 +469,7 @@ export default function OpenModeView({ activeCoin, setActiveCoin, registerClose 
         />
       </View>
 
-      <View style={styles.bars}>
+      <RefreshDim scope="open" style={styles.bars}>
         {tokenList.map((chain) => (
           <TokenBar
             key={chain.id}
@@ -461,7 +480,7 @@ export default function OpenModeView({ activeCoin, setActiveCoin, registerClose 
             onPress={openCoin}
           />
         ))}
-      </View>
+      </RefreshDim>
 
       <View style={styles.tail} />
         </ScrollView>

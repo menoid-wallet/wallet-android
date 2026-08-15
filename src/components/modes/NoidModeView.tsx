@@ -56,7 +56,10 @@ import {
 } from "../../lib/txStore";
 import { getRegisteredChains } from "../../lib/registration";
 import { useTokenPrices } from "../../lib/usePrices";
+import { withRefresh } from "../../lib/refreshBus";
+import { useRefreshNonce, useRefreshBusy } from "../../lib/useRefresh";
 import AnimatedNumber from "../shared/AnimatedNumber";
+import RefreshDim from "../shared/RefreshDim";
 import InlineCopyButton from "../shared/InlineCopyButton";
 import CopyKeysButton from "../shared/CopyKeysButton";
 import TreasureCardShell, { CARD_RADIUS } from "../shared/TreasureCardShell";
@@ -419,6 +422,14 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
     [wallet, allUTXOs, getMerkleProof]
   );
 
+  /* The header's refresh button — noid mode owns the private pool, so this is
+     where the pool resync happens. */
+  const refreshNonce = useRefreshNonce();
+  useEffect(() => {
+    if (refreshNonce === 0) return;
+    void withRefresh("noid", () => forceSync({ parallel: true }));
+  }, [refreshNonce, forceSync]);
+
   /* The recents list spans the PUBLIC log and the PRIVATE one, because someone
      you paid privately is still someone you know. Both have to come off disk
      before they can be scanned, so opening the send sheet loads them and the
@@ -703,20 +714,24 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
                       />
                       <Text style={styles.featuredSymbol}>{featuredChain.symbol}</Text>
                     </View>
-                    <Text style={styles.featuredUsd}>≈ {featuredUsdFormatted}</Text>
-                    <Text style={styles.featuredTotal}>
-                      Total balance:{" "}
-                      <Text style={styles.featuredTotalValue}>{formattedTotalUsd}</Text>
-                    </Text>
+                    <RefreshDim scope="noid">
+                      <Text style={styles.featuredUsd}>≈ {featuredUsdFormatted}</Text>
+                      <Text style={styles.featuredTotal}>
+                        Total balance:{" "}
+                        <Text style={styles.featuredTotalValue}>{formattedTotalUsd}</Text>
+                      </Text>
+                    </RefreshDim>
                   </View>
                 ) : (
                   <View style={styles.balanceBlock}>
-                    <AnimatedNumber
-                      value={formattedTotalUsd}
-                      height={62}
-                      duration={850}
-                      textStyle={styles.totalNumber}
-                    />
+                    <RefreshDim scope="noid">
+                      <AnimatedNumber
+                        value={formattedTotalUsd}
+                        height={62}
+                        duration={850}
+                        textStyle={styles.totalNumber}
+                      />
+                    </RefreshDim>
                   </View>
                 )}
 
@@ -735,7 +750,7 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
             />
           </View>
 
-          <View style={styles.bars}>
+          <RefreshDim scope="noid" style={styles.bars}>
             {tokenList.map((chain) => (
               <TokenBar
                 key={chain.id}
@@ -748,7 +763,7 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
                 onRegister={() => setForceRegister(true)}
               />
             ))}
-          </View>
+          </RefreshDim>
 
           <View style={styles.tail} />
         </ScrollView>

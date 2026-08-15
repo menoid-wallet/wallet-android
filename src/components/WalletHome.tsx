@@ -40,6 +40,8 @@ import { useWallet, type WalletMode } from "../context/WalletContext";
 import type { NetworkId } from "../lib/networks";
 import { useBackHandler } from "../lib/useBackHandler";
 import { modeMix, modePage, onModeScroll, setModeWidth } from "../lib/modeMotion";
+import { requestRefresh } from "../lib/refreshBus";
+import { useRefreshBusy } from "../lib/useRefresh";
 import AnimatedLogo from "./brand/AnimatedLogo";
 import FeedbackModal from "./shared/FeedbackModal";
 import MenoidWordmark from "./brand/MenoidWordmark";
@@ -87,6 +89,30 @@ export default function WalletHome({
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   /* Measured, so the settings overlay starts exactly under the header. */
   const [headerH, setHeaderH] = useState(0);
+
+  /* The refresh button's own spin, driven by whether anything is still
+     reloading rather than a fixed duration — see lib/refreshBus. */
+  const openBusy = useRefreshBusy("open");
+  const noidBusy = useRefreshBusy("noid");
+  const refreshing = openBusy || noidBusy;
+  const spin = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!refreshing) {
+      spin.stopAnimation();
+      spin.setValue(0);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.timing(spin, {
+        toValue: 1,
+        duration: 900,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      })
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [refreshing, spin]);
   /* THE COIN PAGE IS SHARED BY BOTH MODES and therefore lives here.
      Open Monad in open mode, switch to noid, and you should land on Monad's
      private page — or on the register page if that chain is not bound yet.
@@ -253,6 +279,40 @@ export default function WalletHome({
         </Pressable>
 
         <ModePill onSwitch={goToMode} mixN={mixN} mixC={mixC} />
+
+        {/* Refresh — reloads whatever is on screen, from anywhere in the app.
+            Sits left of settings because it is the more frequent action. */}
+        <Pressable
+          onPress={() => requestRefresh()}
+          hitSlop={{ top: 14, bottom: 14, left: 12, right: 12 }}
+          style={({ pressed }) => [pressed && styles.pressed]}>
+          <Animated.View
+            /* Bare glyph, deliberately: two identical pills side by side read
+               as a segmented control rather than two separate actions. */
+            style={styles.refreshBtn}>
+            <Animated.View
+              style={{
+                transform: [
+                  {
+                    rotate: spin.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: ["0deg", "360deg"],
+                    }),
+                  },
+                ],
+              }}>
+              <Animated.View style={[styles.iconBay, { opacity: Animated.subtract(1, mixN) }]}>
+                <RefreshGlyph color={OPEN.ink} />
+              </Animated.View>
+              <Animated.View style={[styles.iconBay, { opacity: mixN }]}>
+                <RefreshGlyph color={NOID.ink} />
+              </Animated.View>
+              {/* A sized spacer so the absolutely-positioned glyphs above have
+                  a box to centre in while the wrapper rotates. */}
+              <View style={styles.glyphBox} />
+            </Animated.View>
+          </Animated.View>
+        </Pressable>
 
         {/* Settings — flips to a close glyph while settings is open */}
         <Pressable
@@ -526,6 +586,22 @@ function SettingsView({
 }
 
 /* ─── glyphs ─── */
+function RefreshGlyph({ color }: { color: string }) {
+  return (
+    <Svg width={18} height={18} viewBox="0 0 24 24">
+      <Path
+        d="M20 11A8 8 0 1 0 18.4 16"
+        stroke={color}
+        strokeWidth={2}
+        strokeLinecap="round"
+        fill="none"
+        opacity={0.9}
+      />
+      <Path d="M20 5.5V11h-5.5" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" fill="none" opacity={0.9} />
+    </Svg>
+  );
+}
+
 function GearGlyph({ color }: { color: string }) {
   return (
     <Svg width={21} height={21} viewBox="0 0 24 24" opacity={0.9}>
@@ -655,6 +731,8 @@ const styles = StyleSheet.create({
      feedback cards above it. The top margin is what stops it collapsing into
      the feedback card — it used to sit flush against it. */
   hidden: { opacity: 0 },
+  refreshBtn: { width: 40, height: 40, alignItems: "center", justifyContent: "center", marginRight: 1 },
+  glyphBox: { width: 21, height: 21 },
   lockBay: { marginTop: 22, paddingBottom: 30 },
   lock: {
     flexDirection: "row",
