@@ -22,13 +22,13 @@ export const SOLANA_PROGRAM_ID =
 
 /* ── Sui testnet ── */
 export const SUI_RPC =
-  process.env.EXPO_PUBLIC_SUI_RPC_URL || "https://rpc-testnet.suiscan.xyz:443";
+  process.env.EXPO_PUBLIC_SUI_RPC_URL || "https://sui-testnet-rpc.publicnode.com";
 export const SUI_PACKAGE_ID =
   process.env.EXPO_PUBLIC_SUI_PACKAGE_ID ||
-  "0x198edf8b1081a2ddccd0fa681b39d564493a774bfdd2218af2b05aabd52d0a4d";
+  "0x9467f20713dc371b452d3def674ee873d50c5850b2eaa944a3856f61dfdbaa60";
 export const SUI_POOL_STATE_ID =
   process.env.EXPO_PUBLIC_SUI_POOL_STATE_ID ||
-  "0xcd8f1c778c0cc807f98e5aaf15b7fcd9911d8f2ba3e14126c4f6cb7f33d67d1c";
+  "0x65ce5b0d1f57a527979dc92d7e3a7eb44650343ff012e13197087a9b9065eba2";
 
 /* ── Aptos testnet ──
    Two different addresses, and mixing them up is a silent failure: MODULE is
@@ -38,7 +38,7 @@ export const SUI_POOL_STATE_ID =
 export const APTOS_NODE_URL = "https://fullnode.testnet.aptoslabs.com/v1";
 export const APTOS_MODULE_ADDR =
   process.env.EXPO_PUBLIC_APTOS_MODULE_ADDR ||
-  "0xcaf04754afdea6523026a6bc9de0199f5665f4399e471ef84ae4456de01f546c";
+  "0x4f79d41d0085866c731825690954720e4543b71c254030f7c86c56b86f8f8c76";
 export const APTOS_POOL_ADDR =
   process.env.EXPO_PUBLIC_APTOS_POOL_ADDR ||
   "0xb50ddea69fa72666f7fc54ad9e1814a66e47ea61288131b0991e17a2ef08dabb";

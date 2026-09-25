@@ -44,3 +44,6 @@ ios/
 
 # generated app
 *.apk
+
+# Claude Code workspace settings — local, never shared
+.claude/

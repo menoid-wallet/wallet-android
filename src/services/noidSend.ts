@@ -77,8 +77,18 @@ export async function resolveRecipient(
   address: string
 ): Promise<{ registered: boolean; recipient: Recipient | null }> {
   const s = await fetchRegistrationStatus(network, address);
-  if (!s.registered || !s.userCommitment || !s.encryptionPublicKey) {
+  if (!s.registered || !s.userCommitment) {
     return { registered: false, recipient: null };
+  }
+  /* Registered, but the chain gave us no encryption key. Since register() puts
+     the key on-chain this should not happen — and if it ever does, reporting
+     it as "not registered" would quietly downgrade the send to a public
+     withdraw, which is the one thing that must not happen by accident. */
+  if (!s.encryptionPublicKey) {
+    throw new Error(
+      "This address is registered but its encryption key is missing on-chain. " +
+        "It cannot receive private notes."
+    );
   }
   return {
     registered: true,

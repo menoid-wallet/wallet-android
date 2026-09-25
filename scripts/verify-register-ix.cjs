@@ -3,9 +3,14 @@
  *
  * services/register.ts builds the instruction directly instead of through
  * @coral-xyz/anchor (which is a large dependency to carry onto a phone for
- * eight bytes and a 32-byte argument). This asserts the encoding it produces is
- * the one the real IDL describes: same discriminator, same account order, same
- * argument layout.
+ * eight bytes and two 32-byte arguments). This asserts the encoding it produces
+ * is the one the real IDL describes: same discriminator, same account order,
+ * same argument layout, same PDA seed.
+ *
+ * The seed check is not decoration. It moved from "registration" to
+ * "registration_v2" when the encryption key was added to the account, and a
+ * wallet still deriving the v1 address would look up an account that does not
+ * exist and report every registered wallet as unregistered.
  *
  *   node scripts/verify-register-ix.cjs
  */
@@ -33,5 +38,19 @@ eq("account order / flags", accounts, [
   ["registration", false, true],
   ["system_program", false, false],
 ]);
-eq("argument layout", ix.args, [{ name: "user_commitment", type: { array: ["u8", 32] } }]);
+eq("argument layout", ix.args, [
+  { name: "user_commitment", type: { array: ["u8", 32] } },
+  { name: "encryption_public_key", type: { array: ["u8", 32] } },
+]);
+
+// The const seed the IDL records for the registration PDA, as text.
+const seedConst = ix.accounts
+  .find((a) => a.name === "registration")
+  ?.pda?.seeds?.find((s) => s.kind === "const");
+eq(
+  "registration PDA seed",
+  Buffer.from(seedConst ? seedConst.value : []).toString(),
+  "registration_v2"
+);
+
 process.exit(bad ? 1 : 0);
