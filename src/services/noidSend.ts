@@ -154,7 +154,7 @@ async function buildTransferCall(
   sender: Sender,
   relayer: RelayerKeys,
   network: NetworkId,
-  getMerkleProof: (poolId: string, leafIndex: number) => MerkleProof | null
+  getMerkleProof: (poolId: string, leafIndex: number, commitment?: string) => MerkleProof | null
 ) {
   const padded: (PoolNote | null)[] = [...inputs];
   while (padded.length < MAX_INPUTS) padded.push(null);
@@ -186,8 +186,8 @@ async function buildTransferCall(
       nullifiersBytes32.push(ZERO_HASH);
       continue;
     }
-    const proof = getMerkleProof(note.poolId, note.leafIndex);
-    if (!proof) throw new Error(`No Merkle proof for leaf ${note.leafIndex}.`);
+    const proof = getMerkleProof(note.poolId, note.leafIndex, note.commitment);
+    if (!proof) throw new Error("This note is not in your wallet\u2019s copy of the pool — the pool changed since it last synced. Close and reopen the wallet, then try again.");
 
     const nullifier = poseidon4([
       2n,
@@ -285,7 +285,7 @@ export interface NoidSendArgs {
   recipient: Recipient;
   notes: PoolNote[];
   sender: Sender;
-  getMerkleProof: (poolId: string, leafIndex: number) => MerkleProof | null;
+  getMerkleProof: (poolId: string, leafIndex: number, commitment?: string) => MerkleProof | null;
   onBatch?: (n: number, total: number) => void;
   onSending?: (hash: string) => void;
 }

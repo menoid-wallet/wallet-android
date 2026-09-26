@@ -73,6 +73,11 @@ export class PoolTree {
     }
   }
 
+  /** Position of a leaf in this tree, or -1. */
+  indexOf(leaf: bigint): number {
+    return this.levels[0].findIndex((l) => l === leaf);
+  }
+
   get root(): bigint {
     return this.levels[TREE_DEPTH][0] ?? ZEROS[TREE_DEPTH];
   }

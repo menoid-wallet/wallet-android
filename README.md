@@ -22,45 +22,11 @@ full write-up is in **[menoid-wallet/Docs](https://github.com/menoid-wallet/Docs
 
 ## 🎬 Demo
 
-Captured on an Android emulator against **Monad testnet** with the real
-contracts — the registration below is a real transaction.
+The app works exactly like the browser extension — same screens, same
+operations, same on-chain identity from the same seed phrase: create a wallet,
+register for Noid Mode, mask, send privately, and unmask.
 
-### Create a wallet
-
-| 1. Welcome | 2. Create or import | 3. Recovery phrase |
-|---|---|---|
-| <img src="docs/demo/01-welcome.png" width="230"> | <img src="docs/demo/02-choose.png" width="230"> | <img src="docs/demo/03-recovery-phrase.png" width="230"> |
-
-| 4. Name the account | 5. Set a password | 6. Unlock |
-|---|---|---|
-| <img src="docs/demo/04-name-account.png" width="230"> | <img src="docs/demo/05-set-password.png" width="230"> | <img src="docs/demo/06-unlock.png" width="230"> |
-
-The password encrypts the keys on the device (PBKDF2 + AES-GCM, PBKDF2 running
-native). Closing the app forgets the decrypted copy, so it always reopens
-locked.
-
-### Open Mode — six chains, one address
-
-| 7. Balances | 8. A single chain | 9. Receive |
-|---|---|---|
-| <img src="docs/demo/07-open-mode.png" width="230"> | <img src="docs/demo/08-coin-view.png" width="230"> | <img src="docs/demo/09-receive.png" width="230"> |
-
-### Noid Mode — register, then go private
-
-Registering signs one message and binds your address to a private identity
-on-chain. Only funded chains can register.
-
-| 10. Pick chains to register | 11. Registered on Monad | 12. Private balance |
-|---|---|---|
-| <img src="docs/demo/10-register-select.png" width="230"> | <img src="docs/demo/11-registered.png" width="230"> | <img src="docs/demo/12-private-balance.png" width="230"> |
-
-### Send privately
-
-Paste an ordinary wallet address. The app resolves that address's private
-identity **straight from the chain** — both the user commitment and the
-encryption key are registered on-chain, so no server can answer wrong.
-
-<img src="docs/demo/13-recipient-resolved.png" width="230">
+### 👉 **[See the step-by-step walkthrough in the extension README](https://github.com/menoid-wallet/Wallet#-demo)**
 
 ---
 

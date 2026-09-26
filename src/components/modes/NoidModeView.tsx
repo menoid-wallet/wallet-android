@@ -391,7 +391,7 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
           noidPublicKey: noid.publicKey,
           ownerAddress: base,
         },
-        getMerkleProof: (poolId, leafIndex) => getMerkleProof(a.network, poolId, leafIndex),
+        getMerkleProof: (poolId, leafIndex, commitment) => getMerkleProof(a.network, poolId, leafIndex, commitment),
         onBatch: (_n, total) => {
           batches = total;
           a.onProving?.();
@@ -526,7 +526,7 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
           noidPublicKey: noid.publicKey,
           ownerAddress: base,
         },
-        getMerkleProof: (poolId, leafIndex) => getMerkleProof(a.network, poolId, leafIndex),
+        getMerkleProof: (poolId, leafIndex, commitment) => getMerkleProof(a.network, poolId, leafIndex, commitment),
         onBatch: (_n, total) => {
           batches = total;
           a.onProving?.();
@@ -544,7 +544,7 @@ export default function NoidModeView({ activeCoin, setActiveCoin, registerClose 
               noidPublicKey: noid.publicKey,
               ownerAddress: base,
             },
-            getMerkleProof: (poolId, leafIndex) => getMerkleProof(a.network, poolId, leafIndex),
+            getMerkleProof: (poolId, leafIndex, commitment) => getMerkleProof(a.network, poolId, leafIndex, commitment),
             onBatch: (_n, total) => {
               batches = total;
               a.onProving?.();

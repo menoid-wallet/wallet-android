@@ -81,7 +81,7 @@ interface PoolContextValue {
    * equalled `pools(0).root` exactly. Returns null if that pool has not been
    * synced yet, which callers must treat as "not ready", never as "no proof".
    */
-  getMerkleProof: (network: NetworkId, poolId: string, leafIndex: number) => MerkleProof | null;
+  getMerkleProof: (network: NetworkId, poolId: string, leafIndex: number, commitment?: string) => MerkleProof | null;
   /** The tree root we hold for a pool — compare against the chain before spending. */
   getRoot: (network: NetworkId, poolId: string) => string | null;
   /** Private balance per chain, formatted for display. */
@@ -167,13 +167,15 @@ export function foldPoolState(
     const mine = claimed[pid] || (claimed[pid] = {});
     const theirs = foreign[pid] || (foreign[pid] = new Set());
     const notes = pool.encryptedNotes || {};
-    const leafToIndex = pool.leafToIndex || {};
 
     for (let i = 0; i < (pool.commitments || []).length; i++) {
       const cm = pool.commitments[i];
       const already = mine[cm];
       if (already) {
         already.spent = nullifierIsSpent(already.nullifier, spent);
+        // re-derived every sync: a cached index is exactly what goes stale
+        // when the server's leaf order is repaired
+        already.leafIndex = i;
         continue;
       }
       if (theirs.has(cm)) continue; // already proven to be somebody else's
@@ -200,7 +202,10 @@ export function foldPoolState(
         commitment: cm,
         amount: note.amount,
         randomness: note.randomness,
-        leafIndex: leafToIndex[cm] ?? i,
+        /* Position in the chain-ordered list IS the leaf index — the tree is
+           built from exactly this list. The server's leafToIndex map is not
+           trusted: one stale entry means a proof for the wrong leaf. */
+        leafIndex: i,
         nullifier,
         spent: nullifierIsSpent(nullifier, spent),
         poolId: pid,
@@ -226,7 +231,13 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
      full rebuild of a tree that can hold a million. Refs, not state — a tree is
      not something the UI renders. */
   const trees = useRef<Record<string, PoolTree>>({});
-  const inserted = useRef<Record<string, number>>({});
+  /* The exact commitments already in each tree, in order — not just a count.
+     A repair on the server (a missed note restored to its real position)
+     inserts in the MIDDLE of the list; appending "whatever is past our count"
+     would then build a tree the chain never had, and every proof from it fails
+     with Invalid root. With the list, each sync proves it is a pure extension
+     or rebuilds. */
+  const inserted = useRef<Record<string, string[]>>({});
 
   /* Rebuilding a depth-20 tree is ~20 poseidon hashes PER LEAF, in pure JS, on
      the one thread that also draws the UI — a first sync over a few dozen
@@ -257,22 +268,42 @@ export function PoolProvider({ children }: { children: React.ReactNode }) {
         });
       }
       const key = `${network}_${pool.poolId}`;
-      if (!trees.current[key]) {
+      const commitments: string[] = pool.commitments || [];
+      const prev = inserted.current[key] || [];
+      const extendsPrev =
+        !!trees.current[key] &&
+        commitments.length >= prev.length &&
+        prev.every((c, idx) => commitments[idx] === c);
+      if (!extendsPrev) {
+        // first sync, or the server's leaf history changed — start over
+        if (prev.length) console.warn(`[pool] ${key}: leaf history changed on the server, rebuilding tree`);
         trees.current[key] = new PoolTree();
-        inserted.current[key] = 0;
+        inserted.current[key] = [];
       }
       const tree = trees.current[key];
-      const commitments: string[] = pool.commitments || [];
-      for (let i = inserted.current[key] ?? 0; i < commitments.length; i++) {
+      for (let i = inserted.current[key].length; i < commitments.length; i++) {
         tree.insert(BigInt(commitments[i]));
       }
-      inserted.current[key] = commitments.length;
+      inserted.current[key] = commitments.slice();
     }
   }, []);
 
+  /* When `commitment` is given — and every spend path gives it — the leaf is
+     located BY COMMITMENT in the very tree the proof is cut from, and
+     `leafIndex` is ignored. A stored index can go stale (a server-side repair
+     moves leaves); a commitment's position in the tree it lives in cannot.
+     A proof for the wrong leaf is what surfaces as the withdraw circuit's
+     "Assert Failed … line 122" and as "Invalid root" on transfers. */
   const getMerkleProof = useCallback(
-    (network: NetworkId, poolId: string, leafIndex: number) =>
-      trees.current[`${network}_${poolId}`]?.proof(leafIndex) ?? null,
+    (network: NetworkId, poolId: string, leafIndex: number, commitment?: string) => {
+      const tree = trees.current[`${network}_${poolId}`];
+      if (!tree) return null;
+      const idx = commitment !== undefined ? tree.indexOf(BigInt(commitment)) : leafIndex;
+      if (idx < 0) return null;
+      const proof = tree.proof(idx);
+      if (proof && commitment !== undefined && BigInt(proof.leaf) !== BigInt(commitment)) return null;
+      return proof;
+    },
     []
   );
 
